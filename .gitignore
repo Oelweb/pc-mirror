@@ -1,0 +1,15 @@
+.tools/
+build/
+dist/
+*.user
+*.log
+__pycache__/
+*.pyc
+# Upstream-Klone und große Fremdbinärdateien (Quellen sind upstream verfügbar)
+third_party/velopack/
+third_party/velopack-sdk/lib-static/
+third_party/velopack-sdk/lib/*linux*
+third_party/velopack-sdk/lib/*osx*
+third_party/velopack-sdk/lib/*arm64*
+third_party/velopack-sdk/lib/*x86_msvc*
+target/

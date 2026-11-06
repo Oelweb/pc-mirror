@@ -1,0 +1,66 @@
+name: Windows release
+on:
+  push:
+    tags: ['v[0-9]*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-libplist
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-gstreamer
+            mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-gst-plugins-good
+            mingw-w64-ucrt-x86_64-gst-plugins-bad
+            mingw-w64-ucrt-x86_64-gst-libav
+            mingw-w64-ucrt-x86_64-qt6-base
+      - name: Check version and prepare tools
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw version.txt).Trim()
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag und version.txt müssen übereinstimmen.' }
+          ./scripts/install-updater-tools.ps1
+          python scripts/create_icon.py
+      - name: Build and test restart policy
+        shell: msys2 {0}
+        run: |
+          bash scripts/build.sh
+          ctest --test-dir build/app --output-on-failure
+      - name: Package native application
+        shell: pwsh
+        run: |
+          $msysRoot = '${{ steps.msys2.outputs.msys2-location }}'
+          ./scripts/package.ps1 -MsysRoot $msysRoot -PackageDirectory "$PWD/build/package"
+          ./tests/Check-Runtime.ps1 -PackageRoot "$PWD/build/package"
+          python tests/backend_integration.py --package "$PWD/build/package"
+          python scripts/fetch_runtime_sources.py --manifest "$PWD/build/package/runtime-sources.json"
+          python tests/verify_package.py --package "$PWD/build/package"
+          $version = (Get-Content -Raw version.txt).Trim()
+          Copy-Item "dist/PC-Mirror-$version-runtime-sources.zip" dist/releases/
+      - name: Publish release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --title "PC-Mirror $env:GITHUB_REF_NAME" --generate-notes --draft
+          gh release upload $env:GITHUB_REF_NAME dist/releases/* --repo $env:GITHUB_REPOSITORY
+          gh release edit $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --draft=false --latest
