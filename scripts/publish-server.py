@@ -28,6 +28,9 @@ remote = config['directory']
 if not re.fullmatch(r'/[A-Za-z0-9_./-]+',remote) or '..' in remote.split('/'):
     raise SystemExit('Invalid remote release folder')
 feed_path = folder/'releases.win.json'
+signature_path = folder/'releases.win.json.sig'
+if not signature_path.is_file():
+    raise SystemExit('Feed signature missing: run scripts/release.ps1 (pcmirror-sign sign)')
 feed = json.loads(feed_path.read_text())
 assets = feed.get('Assets',[])
 if not assets:
@@ -66,7 +69,8 @@ commands=['cd '+quoted(remote)]
 for path in files:
     temporary='.'+path.name+'.partial'
     commands.extend(['put '+quoted(path)+' '+quoted(temporary),'chmod 644 '+quoted(temporary),'rename '+quoted(temporary)+' '+quoted(path.name)])
-for name in ('assets.win.json','RELEASES','releases.win.json'):
+# Signatur direkt vor dem Feed: neue Clients prüfen beides gemeinsam.
+for name in ('assets.win.json','RELEASES','releases.win.json.sig','releases.win.json'):
     path=folder/name
     if path.exists():
         commands.extend(['put '+quoted(path)+' '+quoted('.'+name+'.partial'),'chmod 644 '+quoted('.'+name+'.partial'),'rename '+quoted('.'+name+'.partial')+' '+quoted(name)])
@@ -86,4 +90,8 @@ with urllib.request.urlopen(request,timeout=30) as response:
     if public!=feed:raise SystemExit('Public update feed does not match uploaded release')
     if 'no-store' not in response.headers.get('Cache-Control',''):
         raise SystemExit('Update feed must not be cached')
-print('PASS public HTTPS release feed matches local package feed',flush=True)
+request=urllib.request.Request(config['url'].rstrip('/')+'/releases.win.json.sig',headers={'Cache-Control':'no-cache'})
+with urllib.request.urlopen(request,timeout=30) as response:
+    if response.read().strip()!=signature_path.read_bytes().strip():
+        raise SystemExit('Public feed signature does not match uploaded signature')
+print('PASS public HTTPS release feed and signature match local package feed',flush=True)

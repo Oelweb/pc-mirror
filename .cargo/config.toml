@@ -1,0 +1,3 @@
+# Statische C-Laufzeit: PC-Mirror.exe braucht keine VC++-Redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

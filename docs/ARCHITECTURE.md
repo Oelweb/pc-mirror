@@ -1,29 +1,50 @@
-# PC-Mirror
+# PC-Mirror – Architektur (ab 0.3.0)
 
-Native Qt-6-Widgets-Oberfläche (C++17), UxPlay als separater nativer Prozess. Kein Browser, keine HTML-Oberfläche und kein lokaler Webserver zur Bedienung. Die AirPlay-Protokollports des Empfängers sind erforderlich.
+## Überblick
 
-UxPlay ist auf Commit `116e39069e40f09350a372233937a55c890a02f8` fixiert. Der Quellcode liegt unter `third_party/uxplay`. Version 1.74 ist upstream als experimentell gekennzeichnet. Windows-Build entsprechend Upstream mit MSYS2 UCRT64; `NO_MARCH_NATIVE=ON` verhindert eine Bindung an die Entwickler-CPU.
+```
+PC-Mirror.exe (Rust, Slint)                     uxplay.exe (C/C++, UxPlay 1.74)
+├─ Hauptfenster + Video-Host-HWND  ──PCMIRROR_HWND──▶ eigenes D3D11-Kindfenster
+├─ Werkzeugleiste (Tool-Fenster)                  │
+├─ receiver.rs  ── stdin: STOP/MUTE/SNAPSHOT/IPAD_FILL ──▶
+│               ◀── stdout: PCMIRROR|READY/FRAME/IDLE/PIN/MUTED/SNAPSHOT
+├─ updater.rs + signed_source.rs ── HTTPS ──▶ pcmirror.oel.best (Velopack-Feed + .sig)
+└─ diagnostics.rs ── PowerShell (Prüfung) / UAC (Regeln)
+```
 
-Der integrierte mDNS-Responder kündigt `_airplay._tcp` und `_raop._tcp` an. Dadurch braucht diese Konfiguration keinen Bonjour-Dienst. UDP 5353 und fest konfigurierte TCP/UDP-Ports 48000–48002 müssen im privaten lokalen Netzwerk erreichbar sein. Eine alternative Bonjour-Konfiguration ist nicht mit diesem Build vermischt.
+Der Empfänger bleibt ein **eigener Prozess**: Ein Absturz im Codec reißt die Oberfläche nicht mit. Ein Windows-Job (`KILL_ON_JOB_CLOSE`) beendet `uxplay.exe` zuverlässig, auch wenn die App abstürzt. Es gibt keine zusätzlichen Netzwerk-Steuerports.
 
-GStreamer übernimmt H.264-Decodierung und WASAPI-Audio. D3D11 wird gegenüber D3D12 als konservative Windows-Ausgabe bevorzugt. H.265 ist eine spätere optionale Qualitätsstufe; H.264 ist der Kompatibilitätsstandard. AirPlay 2 Multiroom und Android gehören nicht zur ersten Version.
+## Rust-App (`crates/pcmirror`)
 
-Der separate Prozess begrenzt die Auswirkungen eines Codec-Absturzes. Das abstrakte `ReceiverBackend`-Interface erlaubt spätere andere Empfänger. Ein Windows-Job beendet den Backend-Prozess beim Ende der GUI. Die eigentliche iOS-Kompatibilität wurde durch Benutzerabnahmen von Prototyp, Qt-App und installierter Version bestätigt; Modell-/iOS-übergreifende Tests bleiben separat erforderlich.
+| Modul | Aufgabe |
+|---|---|
+| `main.rs` | Velopack-Hooks, Einzelinstanz (benanntes Mutex), Logging, Software-Renderer |
+| `app.rs` | Zustand und Ablauf im UI-Thread: Fenster, Status, Dialoge, Werkzeugleiste |
+| `events.rs` | Hintergrund-Threads melden Ergebnisse über einen Kanal an den UI-Thread |
+| `receiver.rs` | Start/Stopp von uxplay.exe, Protokoll, Zeitlimits, Fehlerbewertung |
+| `video_host.rs` | natives Host-Fenster; UxPlay leitet Doppelklick/Maus/Tasten hierher weiter |
+| `updater.rs`, `update_policy.rs` | Prüfen, Laden, Installieren nach der Spiegelung |
+| `signed_source.rs` | Velopack-Quelle, die nur Ed25519-signierten Feeds vertraut |
+| `settings.rs`, `secret.rs` | `settings.ini` (kompatibel zur Qt-Version), PIN per DPAPI, Autostart |
+| `diagnostics.rs`, `network.rs` | Adapterübersicht, Firewall-Prüfung und -Einrichtung |
+| `snapshot.rs` | PPM-Frame von UxPlay → PNG (außerhalb des UI-Threads) |
+| `i18n.rs` | deutsche Quelltexte, englische Übersetzung aus `translations/en.json` |
+| `ui/app.slint` | alle Fenster; Texte über `T.t()`, Sprachwechsel ohne Neustart |
 
-Die GUI stellt ein natives Host-HWND bereit. UxPlay erstellt darin ein eigenes natives Kindfenster, dessen Windows-Thread es selbst bedient. GStreamer kann dadurch seinen D3D11-Renderer innerhalb desselben Prozesses betreiben. Die ursprüngliche direkte Übergabe eines prozessfremden Qt-HWND wurde nach dem Einbettungstest ersetzt.
+Die Oberfläche nutzt den Software-Renderer von Slint: robust neben dem nativen D3D11-Kindfenster und unabhängig von OpenGL-Treibern. Die Werkzeugleiste ist ein eigenes, nicht aktivierbares Tool-Fenster über dem Video; sie wird außerhalb des Bildschirms geparkt statt versteckt, damit Slint sie weiter zeichnet.
 
-Steuerung über die geerbte anonyme stdin-Pipe (Stop, Mute, Screenshot); Statusereignisse über stdout, keine zusätzlichen Netzwerk-Steuerports. AirPlay-Handshake und Transport bleiben UxPlay-Code. Ein Pad-Probe referenziert einen dekodierten Frame, die Screenshot-Konvertierung läuft außerhalb des Streaming-Threads. Die Datei wird als PNG durch Qt gespeichert.
+Die App linkt die C-Laufzeit statisch und lädt nur Windows-Systembibliotheken (`tests/verify_package.py` prüft das).
 
-Einstellungen und Logs liegen pro Benutzer unter `%LOCALAPPDATA%/PC-Mirror`. Autostart verwendet HKCU/Run. Firewall-Diagnose läuft ohne Erhöhung; der eng begrenzte Regel-Helfer fordert UAC an. Das Profil wird nicht automatisch geändert. Die App meldet Betriebsfehler in der UI und schreibt technische Details in die rotierende Logdatei.
+## Sicherheit
 
-Lizenz der eigenen App: GPL-3.0-or-later. UxPlay und Änderungen bleiben offen. Bei Weitergabe müssen vollständiger korrespondierender Quellcode, Buildskripte sowie Lizenz- und Quellcodepflichten aller gebündelten Bibliotheken beachtet werden.
+- Update-Feed: Ed25519-Signatur (`pcmirror-sign`), öffentlicher Schlüssel im Programm, SHA-256 für jedes Paket Pflicht, Paketnamen ohne Pfadbestandteile.
+- Firewall: Regeln nur für genau diese `uxplay.exe`, Profil Privat, lokales Subnetz. Das erhöhte Skript wird direkt als `-EncodedCommand` übergeben; Pfade sind PowerShell-Literale. Es wird keine Skriptdatei aus dem beschreibbaren Programmordner erhöht ausgeführt.
+- PIN: per DPAPI an das Windows-Benutzerkonto gebunden.
 
-## Version 0.2.0
+## Empfänger (UxPlay)
 
-Die Spiegelungs- und Codec-Implementierung bleibt unverändert. Die UI verwendet neutrale Qt-Widgets und eine native schwebende Werkzeugleiste über dem D3D-Kindfenster, ohne die Videofläche bei Mausbewegung zu skalieren. Vordergrund- und Diagnosefunktionen bleiben im Einstellungsfenster erreichbar.
+UxPlay ist auf Commit `116e39069e40f09350a372233937a55c890a02f8` fixiert (`third_party/uxplay`). GStreamer übernimmt H.264/H.265-Decodierung (D3D11) und WASAPI-Audio. Der integrierte mDNS-Responder ersetzt Bonjour. Gebaut wird er mit MSYS2 UCRT64 (`scripts/build.sh`), `NO_MARCH_NATIVE=ON` verhindert eine Bindung an die Entwickler-CPU.
 
-Velopack 1.2.161 übernimmt Installation und Updates. Die C++-App nutzt dessen native DLL; kein .NET zur Laufzeit. Der separate Update-Helfer hält blockierende GitHub-/Downloadaufrufe aus dem GUI-Prozess fern und endet mit seinem überprüften Eigentümer. Befehle/Ereignisse laufen über geerbte Prozess-Pipes. Keine neue Netzwerk-Steuerschnittstelle.
+## Weiterer Weg
 
-Automatische Checks beim Start und alle sechs Stunden, standardmäßig an. Ein Download verlangt den expliziten Installationswunsch; die geteilte UpdatePolicy verhindert den Apply-Schritt bei aktiver Spiegelung. Nach einer Ruhefrist wird zuerst UxPlay gestoppt. Velopack wartet anschließend ausdrücklich auf die GUI-Prozess-ID und startet die aktualisierte App neu. Ein aktueller SHA-256 im Feed ist Pflicht, Prüfung und Dateiaustausch bleiben Velopack-Aufgaben. Startup-Auto-Apply des SDK ist deaktiviert.
-
-Das neue flache Velopack-Paket liegt unter `%LOCALAPPDATA%/PCMirror/current`. Die Pfadauflösung unterstützt weiterhin die alte `bin/`-Entwicklungsstruktur. Nutzereinstellungen liegen getrennt davon unter `%LOCALAPPDATA%/PC-Mirror` und überleben Updates.
+Das AirPlay-Protokoll selbst (mDNS, RTSP, Pairing, FairPlay, Stream-Entschlüsselung) lässt sich schrittweise nach Rust portieren; das Ziel wäre ein Empfänger-Crate, das dieselbe stdin/stdout-Schnittstelle bedient und so `uxplay.exe` austauschbar ersetzt. Die Codecs bleiben native GStreamer-/FFmpeg-Bibliotheken.

@@ -1,4 +1,4 @@
-# Updates ab Version 0.2.5
+# Updates
 
 Die App verwendet **https://pcmirror.oel.best**. Velopack 1.2.161 übernimmt HTTPS-Feed, Versionsvergleich, Download, SHA-256-Prüfung, Installation und Neustart. Server-Zugangsdaten sind nicht in der App enthalten.
 
@@ -6,7 +6,7 @@ Die App verwendet **https://pcmirror.oel.best**. Velopack 1.2.161 übernimmt HTT
 
 1. Änderungen vornehmen und `version.txt` erhöhen. Veröffentlichte Nummern nicht erneut verwenden.
 2. Im Projektordner PowerShell öffnen: `scripts/release.ps1`.
-3. Das Skript baut inkrementell, führt die Tests aus, sammelt die Runtime und erzeugt Installer, Update-Pakete und App-/Backend-Quellarchiv.
+3. Das Skript führt die Rust-Tests aus, baut `PC-Mirror.exe`, stellt die Empfänger-Runtime zusammen, prüft das Paket und erzeugt Installer, Update-Pakete und Quellarchiv. Danach signiert es `releases.win.json` mit dem privaten Schlüssel (`releases.win.json.sig`) und prüft die Signatur gegen `packaging/update-signing.pub`.
 4. Der getrennte Benutzer `pcmirror-deploy` lädt die Dateien über SFTP hoch. Versteckte `.partial`-Dateien werden erst nach vollständigem Upload umbenannt. Der Versionsfeed wird zuletzt atomar ausgetauscht und danach öffentlich über HTTPS geprüft.
 5. Nutzer finden die Version beim Start, bei der regelmäßigen Prüfung oder über „Nach Updates suchen“. Weitere GitHub-Releases sind nicht nötig.
 
@@ -17,6 +17,16 @@ python scripts/publish-server.py --release-directory dist/server-release
 ```
 
 Die letzte vollständige `.nupkg` und den Feed in `dist/server-release` behalten. Velopack erzeugt daraus mit `BestSpeed` kleine Delta-Pakete. Ohne vorheriges Paket ist der vollständige Release weiterhin gültig. Deltas beschleunigen vor allem Downloads bei bestehenden Nutzern; der vollständige Installer und das vollständige Paket werden weiterhin veröffentlicht.
+
+## Signierter Update-Feed (ab 0.3.0)
+
+Die App akzeptiert nur Feeds mit gültiger Ed25519-Signatur. Der öffentliche Schlüssel `packaging/update-signing.pub` wird beim Build in die App eingebettet; der private Schlüssel liegt nur lokal in `.tools/signing/update-signing.key` (nicht im Repository, nicht in Quellarchiven).
+
+- **Sichern:** den privaten Schlüssel zusätzlich offline aufbewahren. Geht er verloren, kann keine installierte Version ab 0.3.0 mehr aktualisiert werden (nur Neuinstallation).
+- **Manuell signieren/prüfen:** `cargo run --release -p pcmirror-sign -- sign .tools/signing/update-signing.key dist/server-release/releases.win.json` bzw. `verify packaging/update-signing.pub …`.
+- **Hochladen:** `publish-server.py` verlangt die `.sig`, lädt sie direkt vor dem Feed hoch und prüft beide anschließend öffentlich.
+- **Schlüsselwechsel:** neues Paar mit `pcmirror-sign keygen` erzeugen, `packaging/update-signing.pub` ersetzen und eine Version mit dem **alten** Schlüssel signiert veröffentlichen; erst die Version danach mit dem neuen.
+- Versionen bis 0.2.8 (Qt) prüfen keine Signatur und aktualisieren sich wie bisher auf 0.3.0.
 
 ## Zugang auf dem Entwicklungs-PC
 

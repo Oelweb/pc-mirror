@@ -848,9 +848,13 @@ impl App {
             let x = origin_x + client.width as i32 / 2 - size.width as i32 / 2;
             let y = origin_y + client.height as i32 - (24.0 * scale) as i32 - size.height as i32;
             win::show_at(toolbar, x, y);
+            if !state.toolbar_shown {
+                // Nativ eingeblendet: Slint muss den Inhalt neu zeichnen.
+                self.toolbar.window().request_redraw();
+            }
             state.toolbar_shown = true;
         } else if state.toolbar_shown {
-            win::hide(toolbar);
+            win::park(toolbar);
             state.toolbar_shown = false;
         }
     }
@@ -945,7 +949,7 @@ impl App {
                 win::make_tool_window(handle);
                 win::set_owner(handle, main);
                 win::style_window(handle);
-                win::hide(handle);
+                win::park(handle);
                 self.state.borrow_mut().toolbar_hwnd = Some(handle);
             }
         }

@@ -96,7 +96,21 @@ pub fn make_tool_window(raw: RawHwnd) {
         let style = GetWindowLongPtrW(hwnd(raw), GWL_EXSTYLE);
         let tool = (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) as isize;
         let app = WS_EX_APPWINDOW.0 as isize;
-        SetWindowLongPtrW(hwnd(raw), GWL_EXSTYLE, (style | tool) & !app);
+        let layered = WS_EX_LAYERED.0 as isize;
+        SetWindowLongPtrW(hwnd(raw), GWL_EXSTYLE, (style | tool) & !app & !layered);
+        // Rahmenlose Fenster bekommen sonst DWM-Transparenz; der Software-Renderer
+        // liefert keinen Alphakanal, der Inhalt wäre unsichtbar.
+        let margins = windows::Win32::UI::Controls::MARGINS::default();
+        let _ = windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea(hwnd(raw), &margins);
+        let _ = SetWindowPos(
+            hwnd(raw),
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
     }
 }
 
@@ -111,6 +125,22 @@ pub fn show_at(raw: RawHwnd, x: i32, y: i32) {
             0,
             0,
             SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+}
+
+/// Parkt ein Fenster außerhalb des Bildschirms. Für Slint bleibt es sichtbar und
+/// wird weiter gezeichnet; ein natives Verstecken würde das Rendern anhalten.
+pub fn park(raw: RawHwnd) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd(raw),
+            None,
+            -32000,
+            -32000,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
         );
     }
 }

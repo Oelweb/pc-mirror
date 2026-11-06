@@ -47,3 +47,17 @@ Lokale Entwicklungslogs unter `.tools/`; laufender Empfänger unter `%LOCALAPPDA
 | GitHub-Release mit echter neuer Version / Actions-Job | NOCH OFFEN | Erst nach Übernahme und Veröffentlichung im Benutzer-Repository prüfbar; nichts remote veröffentlicht |
 
 Die native Update-DLL stammt aus Velopack 1.2.161, SDK-Archiv SHA-256 `31de8f2cf05a47bd5328a9f98b0c41aec1582156f6075f1058b26941f7f17c20`. Checks ohne Ergebnis erzeugen ausschließlich Logeinträge. Der Hilfsprozess prüft den Eigentümer über Windows-Dateiidentität statt bloßer Pfadstrings, damit auch Windows-/MSIX-Pfadaliase funktionieren.
+
+## Version 0.3.0 – Rust-Neubau (06.11.2026)
+
+| Prüfung | Ergebnis | Nachweis |
+|---|---|---|
+| Rust-Unit-Tests (Einstellungen, PIN/DPAPI, Protokoll, Fehlerbewertung, Update-Policy, Feed-Signatur, PNG, Übersetzungen) | BESTANDEN | `cargo test --workspace`: 19 Tests |
+| Clippy ohne Warnungen | BESTANDEN | `cargo clippy --workspace --all-targets` |
+| Wartebildschirm, Einstellungen (modal, blau) | VISUELL GEPRÜFT | Bildschirmfotos des echten Fensters, `--ui-preview` |
+| Videoeinbettung und Werkzeugleiste | BESTANDEN | `--test-pattern`: synthetisches Bild im Video-Host, Leiste mit allen Symbolen sichtbar |
+| Empfänger endet mit der App | BESTANDEN | nach Schließen kein `uxplay.exe` mehr aktiv |
+| Runtime-Paket | BESTANDEN | `Check-Runtime.ps1` (15 Elemente + `uxplay -v`), `backend_integration.py`, `verify_package.py` (146 Prüfsummen, App nur mit Windows-DLLs) |
+| Installer und Update-Paket | BESTANDEN | `package.ps1` → `PCMirror-win-Setup.exe`, `PCMirror-0.3.0-full.nupkg` (lokal, nicht veröffentlicht) |
+| Feed-Signatur | BESTANDEN | `pcmirror-sign sign/verify` mit dem eingebetteten öffentlichen Schlüssel |
+| Echtes iPhone/iPad, Update 0.2.x → 0.3.0 | OFFEN | Abnahme durch den Benutzer |
