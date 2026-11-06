@@ -1,0 +1,50 @@
+[package]
+name = "pcmirror"
+description = "PC-Mirror – iPhone/iPad-Bildschirmsynchronisierung für Windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "PC-Mirror"
+path = "src/main.rs"
+
+[dependencies]
+pcmirror-sign = { path = "../pcmirror-sign" }
+slint = { version = "1.18", features = ["raw-window-handle-06", "software-renderer-systemfonts"] }
+velopack = { version = "=1.2.161", features = ["public-utils"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+raw-window-handle = "0.6"
+png = "0.18"
+rfd = "0.17"
+base64.workspace = true
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_System_Com",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[build-dependencies]
+slint-build = "1.18"
+winresource = "0.1"
+serde_json = "1"

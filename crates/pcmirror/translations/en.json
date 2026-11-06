@@ -84,5 +84,10 @@
   "Anleitung ausblenden": "Hide instructions",
   "Mitteilungen beim Spiegeln": "Notifications while mirroring",
   "Am iPhone ein- oder ausschalten.": "Turn on or off on your iPhone.",
-  "Am iPhone: Einstellungen → Mitteilungen → Bildschirmfreigabe → Mitteilungen erlauben.\n\nDort Mitteilungen ein- oder ausschalten. Der Menüpunkt hängt von der iOS-Version ab. Fokus und die Mitteilungseinstellungen der jeweiligen App gelten weiterhin.\n\nPC-Mirror kann diese iPhone-Einstellung nicht ändern.": "On your iPhone: Settings → Notifications → Screen Sharing → Allow Notifications.\n\nTurn notifications on or off there. Availability depends on your iOS version. Focus and per-app notification settings still apply.\n\nPC-Mirror cannot change this iPhone setting."
+  "Am iPhone: Einstellungen → Mitteilungen → Bildschirmfreigabe → Mitteilungen erlauben.\n\nDort Mitteilungen ein- oder ausschalten. Der Menüpunkt hängt von der iOS-Version ab. Fokus und die Mitteilungseinstellungen der jeweiligen App gelten weiterhin.\n\nPC-Mirror kann diese iPhone-Einstellung nicht ändern.": "On your iPhone: Settings → Notifications → Screen Sharing → Allow Notifications.\n\nTurn notifications on or off there. Availability depends on your iOS version. Focus and per-app notification settings still apply.\n\nPC-Mirror cannot change this iPhone setting.",
+  "Protokoll (neueste Einträge oben)": "Log (newest entries first)",
+  "Version %1": "Version %1",
+  "Update-Prüfung fehlgeschlagen. Internetverbindung prüfen und später erneut versuchen.": "The update check failed. Check your internet connection and try again later.",
+  "Updates sind nur in der installierten Version verfügbar.": "Updates are only available in the installed version.",
+  "Der Empfänger meldet einen schweren Fehler. Details und Hilfen stehen in der Diagnose.": "The receiver reported a serious error. Open Diagnostics for details and help."
 }

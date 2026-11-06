@@ -1,0 +1,18 @@
+[package]
+name = "pcmirror-sign"
+description = "Ed25519-Signaturen für den PC-Mirror-Update-Feed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "pcmirror-sign"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
+rand_core.workspace = true
