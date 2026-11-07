@@ -106,11 +106,8 @@ component PushButton inherits Rectangle {
             horizontal-alignment: center;
         }
     }
-    touch := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: pointer;
-        clicked => { focus.focus(); root.clicked(); }
-    }
+    // Fokusbereich liegt unter der Klickfläche: sonst schluckt er den ersten Klick
+    // (nur Fokus, weißer Rand) und erst der zweite Klick löst aus.
     focus := FocusScope {
         enabled: root.enabled;
         key-pressed(event) => {
@@ -120,6 +117,11 @@ component PushButton inherits Rectangle {
             }
             reject
         }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -184,10 +186,6 @@ component Toggle inherits Rectangle {
         background: #FFFFFF;
         animate x { duration: 150ms; easing: ease-in-out; }
     }
-    TouchArea {
-        mouse-cursor: pointer;
-        clicked => { focus.focus(); root.flip(); }
-    }
     focus := FocusScope {
         key-pressed(event) => {
             if (event.text == " ") {
@@ -196,6 +194,10 @@ component Toggle inherits Rectangle {
             }
             reject
         }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.flip(); }
     }
 }
 
