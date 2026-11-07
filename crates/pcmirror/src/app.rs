@@ -747,6 +747,11 @@ impl App {
             state.streaming = streaming;
             state.last_activity = Instant::now();
         }
+        // Ohne Video kein Vollbild: Sonst bleibt das Fenster im Vollbildzustand mit der
+        // Höhe der Wartefläche hängen und erscheint als schmaler Streifen über den Bildschirm.
+        if !streaming && self.main.window().is_fullscreen() {
+            self.main.window().set_fullscreen(false);
+        }
         self.updater.borrow_mut().set_streaming(streaming);
         self.render();
     }
@@ -924,7 +929,10 @@ impl App {
             let y = origin_y + client.height as i32 - (24.0 * scale) as i32 - size.height as i32;
             win::show_at(toolbar, x, y);
             if !state.toolbar_shown {
-                // Nativ eingeblendet: Slint muss den Inhalt neu zeichnen.
+                // Nativ eingeblendet: Der Software-Renderer zeichnet sonst nur geänderte
+                // Bereiche neu, die Symbole fehlten bis zum Überfahren. Ein Wechsel der
+                // Hintergrundphase macht die ganze Leiste ungültig.
+                self.toolbar.set_repaint_phase(!self.toolbar.get_repaint_phase());
                 self.toolbar.window().request_redraw();
             }
             state.toolbar_shown = true;

@@ -622,7 +622,10 @@ export component MainWindow inherits Window {
 export component ToolbarWindow inherits Window {
     no-frame: true;
     title: "PC-Mirror";
-    background: Theme.surface;
+    // Wechselt bei jedem Einblenden um eine unsichtbare Nuance, damit die ganze
+    // Leiste neu gezeichnet wird (siehe update_toolbar in app.rs).
+    in property <bool> repaint-phase;
+    background: root.repaint-phase ? #262627 : Theme.surface;
     width: 200px;
     height: 56px;
     default-font-family: "Segoe UI";
