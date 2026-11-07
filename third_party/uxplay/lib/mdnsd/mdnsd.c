@@ -31,6 +31,7 @@
 #define MDNS_MAX_PACKET 1500
 #define MDNS_COMBINED_PACKET_MAX 1200
 #define MDNS_TTL_HOST 120
+#define MDNS_MAX_IFACES 8
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_AAAA 28
@@ -59,7 +60,12 @@ struct mdnsd_s {
     mdnsd_service_t airplay;
     mdnsd_service_t raop;
 
+    /* Adresse, die gerade in A-Records geschrieben wird (pro Schnittstelle gesetzt). */
     uint32_t ipv4_addr;
+    /* PC-Mirror: alle echten IPv4-Schnittstellen statt nur der ersten. */
+    uint32_t ipv4_addrs[MDNS_MAX_IFACES];
+    uint32_t ipv4_masks[MDNS_MAX_IFACES];
+    int ipv4_count;
     unsigned char ipv6_addr[16];
     unsigned int ipv6_scope_id;
     int sock_fd4;
@@ -345,13 +351,103 @@ static int mdns_query_type_matches(uint16_t query_type, uint16_t record_type)
     return query_type == record_type || query_type == DNS_TYPE_ANY;
 }
 
-static uint32_t mdns_get_default_ipv4(void)
+static uint32_t mdns_prefix_mask(unsigned int prefix)
 {
-    uint32_t addr = 0;
+    if (prefix == 0) {
+        return 0;
+    }
+    if (prefix >= 32) {
+        return 0xffffffffu;
+    }
+    return htonl(0xffffffffu << (32 - prefix));
+}
+
+#ifdef _WIN32
+/*
+ * PC-Mirror: VPN- und virtuelle Adapter (Radmin, Hamachi, ZeroTier, Tailscale,
+ * WireGuard, Hyper-V …) bekommen keine Ankündigung. Sonst landet die
+ * Ankündigung im VPN statt im Heimnetz und das iPhone findet den PC nicht.
+ */
+static int mdns_is_virtual_adapter(const IP_ADAPTER_ADDRESSES *adapter)
+{
+    static const wchar_t *const words[] = {
+        L"Hyper-V", L"Virtual", L"virtual", L"WSL", L"vEthernet", L"VPN",
+        L"TAP-", L"Tunnel", L"WireGuard", L"Wintun", L"Tailscale",
+        L"ZeroTier", L"Hamachi", L"Radmin", L"OpenVPN", L"Npcap",
+        L"Loopback", L"Bluetooth", L"VMware", L"VirtualBox", NULL
+    };
+    int i;
+
+    if (adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK ||
+        adapter->IfType == IF_TYPE_TUNNEL ||
+        adapter->IfType == IF_TYPE_PPP) {
+        return 1;
+    }
+    for (i = 0; words[i]; i++) {
+        if ((adapter->Description && wcsstr(adapter->Description, words[i])) ||
+            (adapter->FriendlyName && wcsstr(adapter->FriendlyName, words[i]))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* strict: 2 = echte Adapter mit Gateway, 1 = echte Adapter, 0 = alles außer Loopback */
+static int mdns_collect_ipv4(const IP_ADAPTER_ADDRESSES *list, int strict,
+                             uint32_t *addrs, uint32_t *masks)
+{
+    const IP_ADAPTER_ADDRESSES *adapter;
+    int count = 0;
+
+    for (adapter = list; adapter && count < MDNS_MAX_IFACES; adapter = adapter->Next) {
+        const IP_ADAPTER_UNICAST_ADDRESS *unicast;
+
+        if (adapter->OperStatus != IfOperStatusUp ||
+            adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK ||
+            (adapter->Flags & IP_ADAPTER_NO_MULTICAST)) {
+            continue;
+        }
+        if (strict >= 1 && mdns_is_virtual_adapter(adapter)) {
+            continue;
+        }
+        if (strict >= 2 && adapter->FirstGatewayAddress == NULL) {
+            continue;
+        }
+        for (unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next) {
+            const struct sockaddr_in *sin =
+                (const struct sockaddr_in *) unicast->Address.lpSockaddr;
+            int duplicate = 0;
+            int i;
+
+            if (!sin || sin->sin_family != AF_INET || !sin->sin_addr.s_addr) {
+                continue;
+            }
+            for (i = 0; i < count; i++) {
+                if (addrs[i] == sin->sin_addr.s_addr) {
+                    duplicate = 1;
+                }
+            }
+            if (!duplicate) {
+                addrs[count] = sin->sin_addr.s_addr;
+                masks[count] = mdns_prefix_mask(unicast->OnLinkPrefixLength);
+                count++;
+            }
+            break;
+        }
+    }
+    return count;
+}
+#endif
+
+/* Füllt addrs/masks mit allen geeigneten IPv4-Schnittstellen und gibt die Anzahl zurück. */
+static int mdns_get_ipv4_interfaces(uint32_t *addrs, uint32_t *masks)
+{
+    int count = 0;
 #ifdef _WIN32
     ULONG buflen = 15000;
     PIP_ADAPTER_ADDRESSES pAddresses = NULL;
     DWORD dwRetVal = 0;
+    int strict;
 
     pAddresses = (IP_ADAPTER_ADDRESSES *) malloc(buflen);
     if (!pAddresses) {
@@ -360,40 +456,26 @@ static uint32_t mdns_get_default_ipv4(void)
     dwRetVal = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS, NULL, pAddresses, &buflen);
     if (dwRetVal == ERROR_BUFFER_OVERFLOW) {
         free(pAddresses);
-        pAddresses = (IP_ADAPTER_ADDRESSES *) malloc(buflen); 
+        pAddresses = (IP_ADAPTER_ADDRESSES *) malloc(buflen);
         if (!pAddresses) {
             return 0;
         }
         dwRetVal = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS, NULL, pAddresses, &buflen);
     }
-    
+
     if (dwRetVal == NO_ERROR) {
-        PIP_ADAPTER_ADDRESSES pCurr = pAddresses;
-        while (pCurr) {
-            // Precise target filters to bypass the Hyper-V virtual adapter loopback capture
-            if (pCurr->OperStatus == IfOperStatusUp && 
-                pCurr->IfType != IF_TYPE_SOFTWARE_LOOPBACK &&
-                pCurr->FirstGatewayAddress != NULL && 
-                wcsstr(pCurr->Description, L"Hyper-V") == NULL &&
-                wcsstr(pCurr->Description, L"Virtual") == NULL &&
-                wcsstr(pCurr->Description, L"WSL") == NULL &&
-                wcsstr(pCurr->Description, L"vEthernet") == NULL) {
-                
-                if (pCurr->FirstUnicastAddress != NULL) {
-                    struct sockaddr_in *sockaddr_ipv4 = (struct sockaddr_in *)pCurr->FirstUnicastAddress->Address.lpSockaddr;
-                    addr = sockaddr_ipv4->sin_addr.s_addr;
-                    break; 
-                }
-            }
-            pCurr = pCurr->Next;
+        for (strict = 2; strict >= 0 && count == 0; strict--) {
+            count = mdns_collect_ipv4(pAddresses, strict, addrs, masks);
         }
     }
     free(pAddresses);
-#else    
+#else
+    
     int fd;
     struct sockaddr_in remote;
     struct sockaddr_in local;
     socklen_t local_len = sizeof(local);
+    memset(&local, 0, sizeof(local));
 
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) {
@@ -407,15 +489,22 @@ static uint32_t mdns_get_default_ipv4(void)
 
     if (connect(fd, (struct sockaddr *) &remote, sizeof(remote)) == 0 &&
         getsockname(fd, (struct sockaddr *) &local, &local_len) == 0) {
-        addr = local.sin_addr.s_addr;
     }
 
     CLOSESOCKET(fd);
+    if (local.sin_addr.s_addr) {
+        addrs[0] = local.sin_addr.s_addr;
+        masks[0] = 0;
+        count = 1;
+    }
 #endif
-    //printf("local ipv4 address %d.%d.%d.%d\n",  (addr & 0xff), ((addr >> 8) & 0xff),
-    //       ((addr >> 16) & 0xff),((addr >> 24) & 0xff));
-    
-    return addr;
+    for (int i = 0; i < count; i++) {
+        uint32_t a = addrs[i];
+        printf("mDNS interface %u.%u.%u.%u\n", (unsigned) (a & 0xff), (unsigned) ((a >> 8) & 0xff),
+               (unsigned) ((a >> 16) & 0xff), (unsigned) ((a >> 24) & 0xff));
+    }
+    fflush(stdout);
+    return count;
 }
 
 static int mdns_get_default_ipv6(unsigned char addr[16], unsigned int *scope_id)
@@ -476,7 +565,7 @@ static int mdns_get_default_ipv6(unsigned char addr[16], unsigned int *scope_id)
 #endif
 }
 
-static int mdns_open_socket4(uint32_t iface_addr)
+static int mdns_open_socket4(const uint32_t *ifaces, int iface_count)
 {
     int fd;
     int one = 1;
@@ -484,6 +573,9 @@ static int mdns_open_socket4(uint32_t iface_addr)
     unsigned char loop = 1;
     struct sockaddr_in addr;
     struct ip_mreq mreq;
+    int joined = 0;
+    int error = 0;
+    int i;
 
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) {
@@ -497,9 +589,9 @@ static int mdns_open_socket4(uint32_t iface_addr)
     setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, (const char *) &ttl, sizeof(ttl));
     setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, (const char *) &loop, sizeof(loop));
 
-    if (iface_addr) {
+    if (iface_count > 0) {
         struct in_addr iface;
-        iface.s_addr = iface_addr;
+        iface.s_addr = ifaces[0];
         setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, (const char *) &iface, sizeof(iface));
     }
 
@@ -509,26 +601,35 @@ static int mdns_open_socket4(uint32_t iface_addr)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) == -1) {
-        int error = SOCKET_GET_ERROR();
+        error = SOCKET_GET_ERROR();
         CLOSESOCKET(fd);
         return -error;
     }
 
-    memset(&mreq, 0, sizeof(mreq));
-    inet_pton(AF_INET, MDNS_ADDR4, &mreq.imr_multiaddr);
-    mreq.imr_interface.s_addr = iface_addr ? iface_addr : htonl(INADDR_ANY);
-    if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
-                   (const char *) &mreq, sizeof(mreq)) == -1) {
-        int error = SOCKET_GET_ERROR();
-        if (iface_addr) {
-            mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-            if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
-                           (const char *) &mreq, sizeof(mreq)) == 0) {
-                return fd;
-            }
+    /* Gruppe auf jeder Schnittstelle beitreten, damit Anfragen aus jedem Netz ankommen. */
+    for (i = 0; i < iface_count; i++) {
+        memset(&mreq, 0, sizeof(mreq));
+        inet_pton(AF_INET, MDNS_ADDR4, &mreq.imr_multiaddr);
+        mreq.imr_interface.s_addr = ifaces[i];
+        if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                       (const char *) &mreq, sizeof(mreq)) == 0) {
+            joined++;
+        } else {
+            error = SOCKET_GET_ERROR();
         }
-        CLOSESOCKET(fd);
-        return -error;
+    }
+    if (!joined) {
+        memset(&mreq, 0, sizeof(mreq));
+        inet_pton(AF_INET, MDNS_ADDR4, &mreq.imr_multiaddr);
+        mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+        if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                       (const char *) &mreq, sizeof(mreq)) == -1) {
+            if (!error) {
+                error = SOCKET_GET_ERROR();
+            }
+            CLOSESOCKET(fd);
+            return -error;
+        }
     }
 
     return fd;
@@ -748,9 +849,9 @@ static void mdns_send_packet6(mdnsd_t *mdnsd, const mdns_packet_t *packet,
            (struct sockaddr *) &addr, sizeof(addr));
 }
 
-static void mdns_send_service_locked(mdnsd_t *mdnsd, const mdnsd_service_t *service,
-                                     int include_host, uint32_t ttl,
-                                     mdns_family_t family, const void *to)
+static void mdns_send_service_one(mdnsd_t *mdnsd, const mdnsd_service_t *service,
+                                  int include_host, uint32_t ttl,
+                                  mdns_family_t family, const void *to)
 {
     mdns_packet_t packet;
 
@@ -765,10 +866,10 @@ static void mdns_send_service_locked(mdnsd_t *mdnsd, const mdnsd_service_t *serv
     }
 }
 
-static void mdns_send_response_locked(mdnsd_t *mdnsd, int include_airplay,
-                                      int include_raop, int include_host,
-                                      uint32_t ttl, mdns_family_t family,
-                                      const void *to)
+static void mdns_send_response_one(mdnsd_t *mdnsd, int include_airplay,
+                                   int include_raop, int include_host,
+                                   uint32_t ttl, mdns_family_t family,
+                                   const void *to)
 {
     mdns_packet_t packet;
 
@@ -786,12 +887,12 @@ static void mdns_send_response_locked(mdnsd_t *mdnsd, int include_airplay,
     }
 
     if (include_airplay) {
-        mdns_send_service_locked(mdnsd, &mdnsd->airplay, include_host, ttl,
-                                 family, to);
+        mdns_send_service_one(mdnsd, &mdnsd->airplay, include_host, ttl,
+                              family, to);
     }
     if (include_raop) {
-        mdns_send_service_locked(mdnsd, &mdnsd->raop, include_host, ttl,
-                                 family, to);
+        mdns_send_service_one(mdnsd, &mdnsd->raop, include_host, ttl,
+                              family, to);
     }
     if (include_host && !include_airplay && !include_raop &&
         !mdns_build_response(mdnsd, &packet, NULL, 1, ttl, family)) {
@@ -801,6 +902,77 @@ static void mdns_send_response_locked(mdnsd_t *mdnsd, int include_airplay,
             mdns_send_packet6(mdnsd, &packet, (const struct sockaddr_in6 *) to);
         }
     }
+}
+
+/* Schnittstelle, in deren Subnetz der Absender liegt (für Unicast-Antworten). */
+static int mdns_iface_for(const mdnsd_t *mdnsd, const struct sockaddr_in *from)
+{
+    int i;
+    if (from) {
+        for (i = 0; i < mdnsd->ipv4_count; i++) {
+            uint32_t mask = mdnsd->ipv4_masks[i];
+            if (mask && (from->sin_addr.s_addr & mask) == (mdnsd->ipv4_addrs[i] & mask)) {
+                return i;
+            }
+        }
+    }
+    return 0;
+}
+
+static void mdns_select_iface(mdnsd_t *mdnsd, int index, int multicast)
+{
+    mdnsd->ipv4_addr = mdnsd->ipv4_addrs[index];
+    if (multicast && mdnsd->sock_fd4 != -1) {
+        struct in_addr iface;
+        iface.s_addr = mdnsd->ipv4_addrs[index];
+        setsockopt(mdnsd->sock_fd4, IPPROTO_IP, IP_MULTICAST_IF,
+                   (const char *) &iface, sizeof(iface));
+    }
+}
+
+/*
+ * IPv4: Multicast auf jeder Schnittstelle mit deren eigener Adresse im A-Record;
+ * Unicast an die Schnittstelle im Subnetz des Absenders.
+ */
+static void mdns_send_response_locked(mdnsd_t *mdnsd, int include_airplay,
+                                      int include_raop, int include_host,
+                                      uint32_t ttl, mdns_family_t family,
+                                      const void *to)
+{
+    int i;
+    if (family != MDNS_FAMILY_IPV4 || mdnsd->ipv4_count <= 1) {
+        mdns_send_response_one(mdnsd, include_airplay, include_raop, include_host,
+                               ttl, family, to);
+        return;
+    }
+    if (to) {
+        mdns_select_iface(mdnsd, mdns_iface_for(mdnsd, (const struct sockaddr_in *) to), 0);
+        mdns_send_response_one(mdnsd, include_airplay, include_raop, include_host,
+                               ttl, family, to);
+    } else {
+        for (i = 0; i < mdnsd->ipv4_count; i++) {
+            mdns_select_iface(mdnsd, i, 1);
+            mdns_send_response_one(mdnsd, include_airplay, include_raop, include_host,
+                                   ttl, family, NULL);
+        }
+    }
+    mdns_select_iface(mdnsd, 0, 1);
+}
+
+static void mdns_send_service_locked(mdnsd_t *mdnsd, const mdnsd_service_t *service,
+                                     int include_host, uint32_t ttl,
+                                     mdns_family_t family, const void *to)
+{
+    int i;
+    if (family != MDNS_FAMILY_IPV4 || mdnsd->ipv4_count <= 1 || to) {
+        mdns_send_service_one(mdnsd, service, include_host, ttl, family, to);
+        return;
+    }
+    for (i = 0; i < mdnsd->ipv4_count; i++) {
+        mdns_select_iface(mdnsd, i, 1);
+        mdns_send_service_one(mdnsd, service, include_host, ttl, family, NULL);
+    }
+    mdns_select_iface(mdnsd, 0, 1);
 }
 
 static void mdns_announce_locked(mdnsd_t *mdnsd, uint32_t ttl)
@@ -1035,10 +1207,11 @@ int mdnsd_start(mdnsd_t *mdnsd)
     int error4 = 0;
     int error6 = 0;
 
-    mdnsd->ipv4_addr = mdns_get_default_ipv4();
+    mdnsd->ipv4_count = mdns_get_ipv4_interfaces(mdnsd->ipv4_addrs, mdnsd->ipv4_masks);
+    mdnsd->ipv4_addr = mdnsd->ipv4_count ? mdnsd->ipv4_addrs[0] : 0;
     mdns_get_default_ipv6(mdnsd->ipv6_addr, &mdnsd->ipv6_scope_id);
 
-    mdnsd->sock_fd4 = mdns_open_socket4(mdnsd->ipv4_addr);
+    mdnsd->sock_fd4 = mdns_open_socket4(mdnsd->ipv4_addrs, mdnsd->ipv4_count);
     if (mdnsd->sock_fd4 < 0) {
         error4 = mdnsd->sock_fd4;
         mdnsd->sock_fd4 = -1;
