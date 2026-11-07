@@ -18,6 +18,8 @@ pub enum Event {
     },
     FirewallChecked {
         ok: bool,
+        private: Option<bool>,
+        rules: Option<bool>,
         message: &'static str,
         details: String,
     },

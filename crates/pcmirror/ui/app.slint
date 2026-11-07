@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // PC-Mirror – native Oberfläche. Texte sind deutsche Quelltexte; T.t() übersetzt
 // sie zur Laufzeit. T.lang ist Parameter, damit ein Sprachwechsel alle Texte neu bindet.
-import { Button, ComboBox, LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+import { ComboBox, LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
 
 export global T {
     in property <string> lang: "de";
@@ -74,24 +74,32 @@ component IconButton inherits Rectangle {
 }
 
 // Hauptaktion in festem Blau #2F7BFF statt der Windows-Akzentfarbe.
-component AccentButton inherits Rectangle {
+// Einheitlicher Button: gleiche Höhe und Form für Haupt- und Nebenaktionen,
+// feste Farben statt der Windows-Akzentfarbe.
+component PushButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
+    in property <bool> primary;
     callback clicked();
-    min-width: 96px;
-    height: 32px;
-    border-radius: 4px;
-    background: !root.enabled ? Theme.line : (touch.pressed ? #2563D6 : (touch.has-hover ? #4A8DFF : Theme.accent));
-    border-width: focus.has-focus ? 2px : 0px;
-    border-color: #FFFFFF;
+    min-width: label.preferred-width + 32px;
+    min-height: 36px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
     accessible-role: button;
     accessible-label: root.text;
     accessible-enabled: root.enabled;
     accessible-action-default => { if (root.enabled) { root.clicked(); } }
-    HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        Text {
+    face := Rectangle {
+        y: (root.height - self.height) / 2;
+        height: 36px;
+        border-radius: 6px;
+        border-width: focus.has-focus ? 2px : 1px;
+        border-color: focus.has-focus ? #FFFFFF : (root.primary && root.enabled ? Theme.accent : Theme.line);
+        background: !root.enabled ? Theme.surface
+            : root.primary ? (touch.pressed ? #2563D6 : (touch.has-hover ? #4A8DFF : Theme.accent))
+            : (touch.pressed ? Theme.bg : (touch.has-hover ? Theme.line : Theme.surface));
+        animate background { duration: 100ms; }
+        label := Text {
             text: root.text;
             color: root.enabled ? #FFFFFF : Theme.muted;
             vertical-alignment: center;
@@ -112,6 +120,33 @@ component AccentButton inherits Rectangle {
             }
             reject
         }
+    }
+}
+
+component SectionTitle inherits Text {
+    color: Theme.muted;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+// Statuszeile mit farbigem Punkt: 0 = wird geprüft, 1 = in Ordnung, 2 = Handlungsbedarf.
+component StatusLine inherits HorizontalLayout {
+    in property <int> state;
+    in property <string> text;
+    spacing: 10px;
+    alignment: start;
+    Rectangle {
+        width: 10px;
+        height: 10px;
+        y: 6px;
+        border-radius: 5px;
+        background: root.state == 1 ? Theme.ok : (root.state == 2 ? Theme.waiting : Theme.muted);
+    }
+    Text {
+        text: root.text;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+        color: root.state == 2 ? Theme.waiting : Theme.text;
     }
 }
 
@@ -182,6 +217,7 @@ component Banner inherits Rectangle {
 component SettingRow inherits Rectangle {
     in property <string> label;
     in property <string> hint;
+    in property <color> hint-color: Theme.muted;
     background: Theme.surface;
     border-color: Theme.line;
     border-width: 1px;
@@ -203,12 +239,187 @@ component SettingRow inherits Rectangle {
             }
             if root.hint != "": Text {
                 text: root.hint;
-                color: Theme.muted;
+                color: root.hint-color;
                 font-size: 12px;
                 wrap: word-wrap;
             }
         }
         @children
+    }
+}
+
+// Einrichtungsassistent direkt im Hauptfenster (kein eigenes Fenster).
+component OnboardingPanel inherits Rectangle {
+    background: Theme.surface;
+    border-color: Theme.line;
+    border-width: 1px;
+    border-radius: 12px;
+    // Feste Höhe: umbrechender Text würde sonst zu niedrig berechnet.
+    height: 440px;
+
+    in-out property <int> page;
+    in property <string> device-name;
+    in property <string> network;
+    in property <int> network-state;
+    in property <string> network-text;
+    in property <int> firewall-state;
+    in property <string> firewall-text;
+    callback configure-firewall();
+    callback recheck();
+    callback open-network-settings();
+    callback finish();
+
+    content := VerticalLayout {
+        padding: 32px;
+        spacing: 20px;
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            for index in 4: Rectangle {
+                width: index == root.page ? 28px : 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: index <= root.page ? Theme.accent : Theme.line;
+                animate width { duration: 150ms; }
+            }
+        }
+
+        if root.page == 0: VerticalLayout {
+            spacing: 16px;
+            Icon {
+                width: 56px;
+                height: 56px;
+                data: Icons.mirror;
+                tint: Theme.accent;
+                stroke-width: 2px;
+            }
+            Text {
+                text: T.t("Willkommen bei PC-Mirror", T.lang);
+                font-size: 22px;
+                font-weight: 600;
+            }
+            Text {
+                text: T.t("Spiegle den Bildschirm deines iPhones oder iPads mit Ton auf diesen PC. In drei kurzen Schritten ist alles bereit: Netzwerk prüfen, Firewall freigeben, verbinden.", T.lang);
+                color: Theme.muted;
+                wrap: word-wrap;
+            }
+        }
+
+        if root.page == 1: VerticalLayout {
+            spacing: 14px;
+            Text {
+                text: T.t("Schritt 1: Netzwerk", T.lang);
+                font-size: 20px;
+                font-weight: 600;
+            }
+            Text {
+                text: T.t("PC und iPhone/iPad müssen mit demselben Router verbunden sein. Ethernet am PC ist erlaubt. Gastnetz, VPN und AP-Isolation können die Verbindung blockieren.", T.lang);
+                color: Theme.muted;
+                wrap: word-wrap;
+            }
+            StatusLine {
+                state: root.network-state;
+                text: root.network-text;
+            }
+            Text {
+                text: root.network;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+            if root.network-state == 2: HorizontalLayout {
+                alignment: start;
+                PushButton {
+                    primary: true;
+                    text: T.t("Netzwerkeinstellungen öffnen", T.lang);
+                    clicked => { root.open-network-settings(); }
+                }
+            }
+        }
+
+        if root.page == 2: VerticalLayout {
+            spacing: 14px;
+            Text {
+                text: T.t("Schritt 2: Firewall", T.lang);
+                font-size: 20px;
+                font-weight: 600;
+            }
+            Text {
+                text: T.t("Damit dein iPhone PC-Mirror findet, braucht Windows eine Freigabe – nur für dieses Programm und nur im privaten Heimnetz. Windows fragt dabei nach Administratorrechten.", T.lang);
+                color: Theme.muted;
+                wrap: word-wrap;
+            }
+            StatusLine {
+                state: root.firewall-state;
+                text: root.firewall-text;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                if root.firewall-state != 1: PushButton {
+                    primary: true;
+                    text: T.t("Firewall einrichten", T.lang);
+                    clicked => { root.configure-firewall(); }
+                }
+                PushButton {
+                    text: T.t("Erneut prüfen", T.lang);
+                    clicked => { root.recheck(); }
+                }
+            }
+        }
+
+        if root.page == 3: VerticalLayout {
+            spacing: 14px;
+            Text {
+                text: T.t("Schritt 3: Verbinden", T.lang);
+                font-size: 20px;
+                font-weight: 600;
+            }
+            Text {
+                text: "1.  " + T.t("Am iPhone oder iPad das Kontrollzentrum öffnen (oben rechts nach unten wischen).", T.lang);
+                wrap: word-wrap;
+            }
+            Text {
+                text: "2.  " + T.t("„Bildschirmsynchronisierung“ antippen.", T.lang);
+                wrap: word-wrap;
+            }
+            Text {
+                text: "3.  " + T.t("Diesen PC auswählen:", T.lang) + " " + root.device-name;
+                wrap: word-wrap;
+            }
+            Text {
+                text: T.t("Tipp: Einstellungen jederzeit mit Strg+, öffnen. Den Assistenten findest du dort unter „Verbindung“.", T.lang);
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            spacing: 8px;
+            if root.page < 3: PushButton {
+                text: T.t("Überspringen", T.lang);
+                clicked => { root.finish(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.page > 0: PushButton {
+                text: T.t("Zurück", T.lang);
+                clicked => { root.page -= 1; }
+            }
+            PushButton {
+                primary: true;
+                text: root.page == 3 ? T.t("Fertig", T.lang) : T.t("Weiter", T.lang);
+                clicked => {
+                    if (root.page == 3) {
+                        root.finish();
+                    } else {
+                        root.page += 1;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -230,11 +441,20 @@ export component MainWindow inherits Window {
     in property <string> pin-text;
     in property <bool> error-visible;
     in property <string> error-text;
+    in property <string> error-action-text;
     in property <bool> update-visible;
     in property <string> update-text;
     in property <bool> can-install;
     in property <bool> can-later: true;
     in property <string> notice-text;
+    in property <bool> onboarding-visible;
+    in-out property <int> onboarding-page;
+    in property <string> onboarding-device;
+    in property <string> onboarding-network;
+    in property <int> onboarding-network-state;
+    in property <string> onboarding-network-text;
+    in property <int> onboarding-firewall-state;
+    in property <string> onboarding-firewall-text;
     out property <length> stage-x: stage.absolute-position.x;
     out property <length> stage-y: stage.absolute-position.y;
     out property <length> stage-width: stage.width;
@@ -243,11 +463,16 @@ export component MainWindow inherits Window {
     callback open-settings();
     callback show-diagnostics();
     callback restart();
+    callback error-action();
     callback dismiss-error();
     callback install-update();
     callback later-update();
     callback toggle-fullscreen();
     callback leave-fullscreen();
+    callback onboarding-configure-firewall();
+    callback onboarding-recheck();
+    callback onboarding-network-settings();
+    callback onboarding-finish();
 
     forward-focus: keys;
     keys := FocusScope {
@@ -276,13 +501,14 @@ export component MainWindow inherits Window {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
-                Button {
+                PushButton {
                     text: T.t("Diagnose", T.lang);
                     clicked => { root.show-diagnostics(); }
                 }
-                Button {
-                    text: T.t("Neu starten", T.lang);
-                    clicked => { root.restart(); }
+                PushButton {
+                    primary: true;
+                    text: root.error-action-text;
+                    clicked => { root.error-action(); }
                 }
                 IconButton {
                     icon: Icons.close;
@@ -297,12 +523,13 @@ export component MainWindow inherits Window {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
-                AccentButton {
+                PushButton {
+                    primary: true;
                     text: T.t("Jetzt installieren", T.lang);
                     enabled: root.can-install;
                     clicked => { root.install-update(); }
                 }
-                Button {
+                PushButton {
                     text: T.t("Später", T.lang);
                     enabled: root.can-later;
                     clicked => { root.later-update(); }
@@ -311,7 +538,28 @@ export component MainWindow inherits Window {
             stage := Rectangle {
                 vertical-stretch: 1;
                 background: root.streaming ? #000000 : Theme.bg;
-                if !root.streaming: VerticalLayout {
+                if !root.streaming && root.onboarding-visible: VerticalLayout {
+                    padding: 24px;
+                    alignment: center;
+                    HorizontalLayout {
+                        alignment: center;
+                        OnboardingPanel {
+                            width: 600px;
+                            page <=> root.onboarding-page;
+                            device-name: root.onboarding-device;
+                            network: root.onboarding-network;
+                            network-state: root.onboarding-network-state;
+                            network-text: root.onboarding-network-text;
+                            firewall-state: root.onboarding-firewall-state;
+                            firewall-text: root.onboarding-firewall-text;
+                            configure-firewall => { root.onboarding-configure-firewall(); }
+                            recheck => { root.onboarding-recheck(); }
+                            open-network-settings => { root.onboarding-network-settings(); }
+                            finish => { root.onboarding-finish(); }
+                        }
+                    }
+                }
+                if !root.streaming && !root.onboarding-visible: VerticalLayout {
                     padding-left: 32px;
                     padding-right: 32px;
                     padding-top: 16px;
@@ -423,7 +671,7 @@ export component SettingsWindow inherits Window {
     icon: @image-url("../../../assets/icon-256.png");
     background: Theme.bg;
     preferred-width: 664px;
-    preferred-height: 752px;
+    preferred-height: 760px;
     min-width: 600px;
     min-height: 560px;
     default-font-family: "Segoe UI";
@@ -443,6 +691,8 @@ export component SettingsWindow inherits Window {
     in property <string> update-status;
     in property <bool> can-check: true;
     in property <string> validation;
+    in property <string> firewall-status;
+    in property <int> firewall-state;
     property <bool> help-visible;
 
     callback language-selected(int);
@@ -450,6 +700,8 @@ export component SettingsWindow inherits Window {
     callback save();
     callback cancel();
     callback show-diagnostics();
+    callback configure-firewall();
+    callback start-onboarding();
 
     VerticalLayout {
         padding: 24px;
@@ -457,12 +709,15 @@ export component SettingsWindow inherits Window {
         ScrollView {
             vertical-stretch: 1;
             VerticalLayout {
+                padding-right: 14px;
                 spacing: 8px;
                 alignment: start;
+
+                SectionTitle { text: T.t("Allgemein", T.lang); }
                 SettingRow {
                     label: T.t("Sprache", T.lang);
                     ComboBox {
-                        width: 256px;
+                        width: 240px;
                         model: ["Deutsch", "English"];
                         current-index <=> root.language-index;
                         accessible-label: T.t("Sprache", T.lang);
@@ -471,16 +726,34 @@ export component SettingsWindow inherits Window {
                 }
                 SettingRow {
                     label: T.t("Gerätename", T.lang);
+                    hint: T.t("So erscheint der PC am iPhone.", T.lang);
                     LineEdit {
-                        width: 256px;
+                        width: 240px;
                         text <=> root.device-name;
                         accessible-label: T.t("Gerätename", T.lang);
                     }
                 }
                 SettingRow {
+                    label: T.t("Mit Windows starten", T.lang);
+                    Toggle {
+                        checked <=> root.autostart;
+                        label: T.t("Mit Windows starten", T.lang);
+                    }
+                }
+                SettingRow {
+                    label: T.t("Immer im Vordergrund", T.lang);
+                    Toggle {
+                        checked <=> root.topmost;
+                        label: T.t("Immer im Vordergrund", T.lang);
+                    }
+                }
+
+                SectionTitle { text: T.t("Bild und Ton", T.lang); }
+                SettingRow {
                     label: T.t("Qualität", T.lang);
+                    hint: T.t("Bei Ruckeln 720p wählen.", T.lang);
                     ComboBox {
-                        width: 256px;
+                        width: 240px;
                         model: ["720p · 30 FPS", "1080p · 60 FPS", T.t("4K · 60 FPS (experimentell)", T.lang)];
                         current-index <=> root.quality-index;
                         accessible-label: T.t("Qualität", T.lang);
@@ -495,21 +768,18 @@ export component SettingsWindow inherits Window {
                     }
                 }
                 SettingRow {
-                    label: T.t("Immer im Vordergrund", T.lang);
+                    label: T.t("Software-Decodierung", T.lang);
+                    hint: T.t("Hilft bei schwarzem Bild mit älteren Grafiktreibern.", T.lang);
                     Toggle {
-                        checked <=> root.topmost;
-                        label: T.t("Immer im Vordergrund", T.lang);
+                        checked <=> root.software-decoder;
+                        label: T.t("Software-Decodierung", T.lang);
                     }
                 }
-                SettingRow {
-                    label: T.t("Mit Windows starten", T.lang);
-                    Toggle {
-                        checked <=> root.autostart;
-                        label: T.t("Mit Windows starten", T.lang);
-                    }
-                }
+
+                SectionTitle { text: T.t("Sicherheit", T.lang); }
                 SettingRow {
                     label: T.t("PIN-Schutz", T.lang);
+                    hint: T.t("Das iPhone muss beim Verbinden einen Code eingeben.", T.lang);
                     Toggle {
                         checked <=> root.pin-enabled;
                         label: T.t("PIN-Schutz", T.lang);
@@ -518,38 +788,47 @@ export component SettingsWindow inherits Window {
                 if root.pin-enabled: SettingRow {
                     label: "PIN";
                     LineEdit {
-                        width: 256px;
+                        width: 240px;
                         text <=> root.pin;
                         input-type: number;
                         placeholder-text: T.t("Leer = zufälliger Code", T.lang);
                         accessible-label: "PIN";
                     }
                 }
+
+                SectionTitle { text: T.t("Verbindung", T.lang); }
                 SettingRow {
-                    label: T.t("Software-Decodierung", T.lang);
-                    Toggle {
-                        checked <=> root.software-decoder;
-                        label: T.t("Software-Decodierung", T.lang);
+                    label: T.t("Firewall und Netzwerk", T.lang);
+                    hint: root.firewall-status;
+                    hint-color: root.firewall-state == 1 ? Theme.ok : (root.firewall-state == 2 ? Theme.waiting : Theme.muted);
+                    PushButton {
+                        primary: root.firewall-state == 2;
+                        text: T.t("Firewall einrichten", T.lang);
+                        clicked => { root.configure-firewall(); }
                     }
                 }
                 SettingRow {
-                    label: T.t("Mitteilungen beim Spiegeln", T.lang);
-                    hint: T.t("Am iPhone ein- oder ausschalten.", T.lang);
-                    Button {
-                        text: root.help-visible ? T.t("Anleitung ausblenden", T.lang) : T.t("Anleitung anzeigen", T.lang);
-                        clicked => { root.help-visible = !root.help-visible; }
+                    label: T.t("Einrichtungsassistent", T.lang);
+                    hint: T.t("Netzwerk, Firewall und Verbinden Schritt für Schritt.", T.lang);
+                    PushButton {
+                        text: T.t("Starten", T.lang);
+                        clicked => { root.start-onboarding(); }
                     }
                 }
-                if root.help-visible: Text {
-                    text: T.t("Am iPhone: Einstellungen → Mitteilungen → Bildschirmfreigabe → Mitteilungen erlauben.\n\nDort Mitteilungen ein- oder ausschalten. Der Menüpunkt hängt von der iOS-Version ab. Fokus und die Mitteilungseinstellungen der jeweiligen App gelten weiterhin.\n\nPC-Mirror kann diese iPhone-Einstellung nicht ändern.", T.lang);
-                    color: Theme.muted;
-                    wrap: word-wrap;
+                SettingRow {
+                    label: T.t("Diagnose", T.lang);
+                    hint: T.t("Netzwerkadapter, Firewall-Prüfung und Protokoll.", T.lang);
+                    PushButton {
+                        text: T.t("Öffnen", T.lang);
+                        clicked => { root.show-diagnostics(); }
+                    }
                 }
-                Rectangle { height: 8px; }
+
+                SectionTitle { text: T.t("Updates", T.lang); }
                 SettingRow {
                     label: root.version-text;
-                    Button {
-                        width: 208px;
+                    hint: root.update-status;
+                    PushButton {
                         text: T.t("Nach Updates suchen", T.lang);
                         enabled: root.can-check;
                         clicked => { root.check-updates(); }
@@ -562,8 +841,18 @@ export component SettingsWindow inherits Window {
                         label: T.t("Automatisch nach Updates suchen", T.lang);
                     }
                 }
-                if root.update-status != "": Text {
-                    text: root.update-status;
+
+                SectionTitle { text: T.t("Hilfe", T.lang); }
+                SettingRow {
+                    label: T.t("Mitteilungen beim Spiegeln", T.lang);
+                    hint: T.t("Am iPhone ein- oder ausschalten.", T.lang);
+                    PushButton {
+                        text: root.help-visible ? T.t("Anleitung ausblenden", T.lang) : T.t("Anleitung anzeigen", T.lang);
+                        clicked => { root.help-visible = !root.help-visible; }
+                    }
+                }
+                if root.help-visible: Text {
+                    text: T.t("Am iPhone: Einstellungen → Mitteilungen → Bildschirmfreigabe → Mitteilungen erlauben.\n\nDort Mitteilungen ein- oder ausschalten. Der Menüpunkt hängt von der iOS-Version ab. Fokus und die Mitteilungseinstellungen der jeweiligen App gelten weiterhin.\n\nPC-Mirror kann diese iPhone-Einstellung nicht ändern.", T.lang);
                     color: Theme.muted;
                     wrap: word-wrap;
                 }
@@ -576,23 +865,20 @@ export component SettingsWindow inherits Window {
         }
         HorizontalLayout {
             spacing: 8px;
-            IconButton {
-                icon: Icons.help;
-                label: T.t("Diagnose", T.lang);
-                clicked => { root.show-diagnostics(); }
-            }
-            Rectangle { horizontal-stretch: 1; }
-            Button {
+            alignment: end;
+            PushButton {
                 text: T.t("Abbrechen", T.lang);
                 clicked => { root.cancel(); }
             }
-            AccentButton {
+            PushButton {
+                primary: true;
                 text: T.t("Speichern", T.lang);
                 clicked => { root.save(); }
             }
         }
     }
 }
+
 
 export component DiagnosticsWindow inherits Window {
     title: T.t("Diagnose & Hilfe · PC-Mirror", T.lang);
@@ -629,15 +915,16 @@ export component DiagnosticsWindow inherits Window {
         HorizontalLayout {
             spacing: 8px;
             alignment: start;
-            AccentButton {
+            PushButton {
+                primary: true;
                 text: T.t("Firewall einrichten", T.lang);
                 clicked => { root.configure-firewall(); }
             }
-            Button {
+            PushButton {
                 text: T.t("Erneut prüfen", T.lang);
                 clicked => { root.recheck(); }
             }
-            Button {
+            PushButton {
                 text: T.t("Logordner öffnen", T.lang);
                 clicked => { root.open-logs(); }
             }
@@ -664,7 +951,7 @@ export component DiagnosticsWindow inherits Window {
         }
         HorizontalLayout {
             alignment: end;
-            Button {
+            PushButton {
                 text: T.t("Schließen", T.lang);
                 clicked => { root.close-clicked(); }
             }

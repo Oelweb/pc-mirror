@@ -49,6 +49,15 @@ enum Dialog {
     Diagnostics,
 }
 
+/// Prüfergebnis für die Anzeige: 0 = unbekannt/prüft, 1 = in Ordnung, 2 = Handlungsbedarf.
+fn check_state(value: Option<bool>) -> i32 {
+    match value {
+        Some(true) => 1,
+        Some(false) => 2,
+        None => 0,
+    }
+}
+
 struct Snapshot {
     target: PathBuf,
     temporary: PathBuf,
@@ -68,6 +77,9 @@ struct State {
     pin: Option<String>,
     notice: Option<(Text, Option<Instant>)>,
     firewall_status: Text,
+    network_private: Option<bool>,
+    firewall_rules: Option<bool>,
+    firewall_checking: bool,
     last_activity: Instant,
     previous_cursor: (i32, i32),
     snapshot: Option<Snapshot>,
@@ -88,6 +100,7 @@ pub struct App {
     toolbar: ToolbarWindow,
     settings_window: RefCell<Option<SettingsWindow>>,
     diagnostics_window: RefCell<Option<DiagnosticsWindow>>,
+    onboarding: Cell<bool>,
     state: RefCell<State>,
     receiver: RefCell<Receiver>,
     updater: RefCell<UpdateService>,
@@ -120,6 +133,9 @@ pub fn run(settings: Settings, synthetic: bool, preview: bool) -> Result<(), sli
         pin: None,
         notice: synthetic.then(|| (Text::new("Synthetischer Bildtest"), None)),
         firewall_status: Text::new("Windows fragt zum Einrichten nach Administratorrechten."),
+        network_private: None,
+        firewall_rules: None,
+        firewall_checking: false,
         last_activity: Instant::now(),
         previous_cursor: win::cursor_pos(),
         snapshot: None,
@@ -137,6 +153,7 @@ pub fn run(settings: Settings, synthetic: bool, preview: bool) -> Result<(), sli
         toolbar,
         settings_window: RefCell::new(None),
         diagnostics_window: RefCell::new(None),
+        onboarding: Cell::new(false),
         state: RefCell::new(state),
         receiver: RefCell::new(Receiver::default()),
         updater: RefCell::new(UpdateService::new()),
@@ -208,6 +225,39 @@ impl App {
         main.on_show_diagnostics(move || {
             if let Some(app) = w.upgrade() {
                 app.open_diagnostics();
+            }
+        });
+        let w = self.weak();
+        main.on_error_action(move || {
+            if let Some(app) = w.upgrade() {
+                if app.state.borrow().firewall_banner {
+                    app.configure_firewall();
+                } else {
+                    app.restart();
+                }
+            }
+        });
+        let w = self.weak();
+        main.on_onboarding_configure_firewall(move || {
+            if let Some(app) = w.upgrade() {
+                app.configure_firewall();
+            }
+        });
+        let w = self.weak();
+        main.on_onboarding_recheck(move || {
+            if let Some(app) = w.upgrade() {
+                app.main
+                    .set_onboarding_network(diagnostics::adapter_summary().into());
+                app.check_firewall();
+            }
+        });
+        main.on_onboarding_network_settings(|| {
+            win::open_uri("ms-settings:network-status");
+        });
+        let w = self.weak();
+        main.on_onboarding_finish(move || {
+            if let Some(app) = w.upgrade() {
+                app.close_onboarding();
             }
         });
         let w = self.weak();
@@ -343,9 +393,24 @@ impl App {
         }
         self.launch();
         if !self.synthetic {
-            diagnostics::check_firewall();
+            self.check_firewall();
             self.updater.borrow_mut().start(automatic);
+            if !settings::onboarding_done() {
+                self.open_onboarding(0);
+            }
         }
+    }
+
+    fn check_firewall(&self) {
+        self.state.borrow_mut().firewall_checking = true;
+        diagnostics::check_firewall();
+        self.render();
+    }
+
+    fn configure_firewall(&self) {
+        self.state.borrow_mut().firewall_checking = true;
+        diagnostics::configure_firewall();
+        self.render();
     }
 
     // ------------------------------------------------------------ Ereignisse
@@ -372,9 +437,17 @@ impl App {
             }
             Event::FirewallChecked {
                 ok,
+                private,
+                rules,
                 message,
                 details,
             } => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.network_private = private;
+                    state.firewall_rules = rules;
+                    state.firewall_checking = false;
+                }
                 logging::line(&format!(
                     "{message}{}",
                     if details.is_empty() {
@@ -388,10 +461,11 @@ impl App {
             Event::FirewallConfigured { result } => match result {
                 Ok(code) => {
                     logging::line(&format!("Firewall-Helfer beendet, Code {code}"));
-                    diagnostics::check_firewall();
+                    self.check_firewall();
                 }
                 Err(message) => {
                     logging::line(message);
+                    self.state.borrow_mut().firewall_checking = false;
                     self.firewall_result(false, message);
                 }
             },
@@ -507,7 +581,8 @@ impl App {
         {
             let mut state = self.state.borrow_mut();
             state.firewall_status = Text::new(message);
-            if !ok && !self.synthetic && !self.preview {
+            let onboarding = self.onboarding.get();
+            if !ok && !self.synthetic && !self.preview && !onboarding {
                 state.firewall_banner = true;
                 state.error = Some(Text::new(message));
             } else if ok && state.firewall_banner {
@@ -885,6 +960,14 @@ impl App {
                 .into(),
         );
         main.set_error_visible(state.error.is_some());
+        main.set_error_action_text(
+            tr(if state.firewall_banner {
+                "Firewall einrichten"
+            } else {
+                "Neu starten"
+            })
+            .into(),
+        );
         main.set_error_text(
             state
                 .error
@@ -911,9 +994,68 @@ impl App {
             .set_can_shoot(state.streaming && state.snapshot.is_none() && !state.converting);
         self.toolbar.set_can_disconnect(state.streaming);
 
+        let firewall_state = if state.firewall_checking {
+            0
+        } else {
+            check_state(
+                state
+                    .firewall_rules
+                    .zip(state.network_private)
+                    .map(|(r, p)| r && p)
+                    .or(
+                        if state.firewall_rules == Some(false)
+                            || state.network_private == Some(false)
+                        {
+                            Some(false)
+                        } else {
+                            None
+                        },
+                    ),
+            )
+        };
+        let firewall_text = if state.firewall_checking {
+            tr("Wird geprüft …")
+        } else {
+            state.firewall_status.render()
+        };
         if let Some(window) = self.settings_window.borrow().as_ref() {
             window.set_update_status(updater.status_text().into());
             window.set_can_check(!updater.is_busy());
+            window.set_firewall_status(firewall_text.clone().into());
+            window.set_firewall_state(firewall_state);
+        }
+        main.set_onboarding_visible(self.onboarding.get());
+        {
+            let window = main;
+            window.set_onboarding_device(state.settings.name.clone().into());
+            let network = if state.firewall_checking {
+                0
+            } else {
+                check_state(state.network_private)
+            };
+            window.set_onboarding_network_state(network);
+            window.set_onboarding_network_text(
+                tr(match network {
+                    1 => "Privates Netzwerk erkannt.",
+                    2 => "Öffentliches Netzwerk: In Windows auf „Privat“ stellen, wenn es dein Heimnetz ist.",
+                    _ => "Wird geprüft …",
+                })
+                .into(),
+            );
+            let rules = if state.firewall_checking {
+                0
+            } else {
+                check_state(state.firewall_rules)
+            };
+            window.set_onboarding_firewall_state(rules);
+            window.set_onboarding_firewall_text(
+                tr(match rules {
+                    1 => "Freigabe eingerichtet. PC-Mirror ist im Heimnetz erreichbar.",
+                    2 => "Freigabe fehlt noch.",
+                    _ => "Wird geprüft …",
+                })
+                .into(),
+            );
         }
         if let Some(window) = self.diagnostics_window.borrow().as_ref() {
             window.set_firewall_status(state.firewall_status.render().into());
@@ -930,8 +1072,12 @@ impl App {
             window.set_version_text(trf("Version %1", &[VERSION]).into());
         }
         if let Some(window) = self.diagnostics_window.borrow().as_ref() {
-            window.global::<T>().set_lang(code);
+            window.global::<T>().set_lang(code.clone());
             window.set_network(diagnostics::network_summary().into());
+        }
+        if self.onboarding.get() {
+            self.main
+                .set_onboarding_network(diagnostics::adapter_summary().into());
         }
         self.render();
     }
@@ -1070,6 +1216,19 @@ impl App {
             }
         });
         let w = self.weak();
+        window.on_configure_firewall(move || {
+            if let Some(app) = w.upgrade() {
+                app.configure_firewall();
+            }
+        });
+        let w = self.weak();
+        window.on_start_onboarding(move || {
+            if let Some(app) = w.upgrade() {
+                app.close_settings(false);
+                app.open_onboarding(1);
+            }
+        });
+        let w = self.weak();
         window.window().on_close_requested(move || {
             if let Some(app) = w.upgrade() {
                 app.close_settings(false);
@@ -1194,8 +1353,18 @@ impl App {
         window.set_log_text(logging::recent_newest_first().into());
         self.state.borrow_mut().log_revision = logging::revision();
 
-        window.on_configure_firewall(diagnostics::configure_firewall);
-        window.on_recheck(diagnostics::check_firewall);
+        let w = self.weak();
+        window.on_configure_firewall(move || {
+            if let Some(app) = w.upgrade() {
+                app.configure_firewall();
+            }
+        });
+        let w = self.weak();
+        window.on_recheck(move || {
+            if let Some(app) = w.upgrade() {
+                app.check_firewall();
+            }
+        });
         let w = self.weak();
         window.on_open_logs(move || {
             if let Some(app) = w.upgrade() {
@@ -1231,6 +1400,33 @@ impl App {
         self.begin_modal(Dialog::Diagnostics);
         self.state.borrow_mut().last_activity = Instant::now();
         diagnostics::check_firewall();
+        self.render();
+    }
+
+    /// Zeigt den Assistenten im Hauptfenster (statt des Wartebildschirms).
+    fn open_onboarding(self: &Rc<Self>, page: i32) {
+        self.onboarding.set(true);
+        self.main.set_onboarding_page(page);
+        self.main
+            .set_onboarding_network(diagnostics::adapter_summary().into());
+        self.check_firewall();
+    }
+
+    /// Abschließen oder Überspringen merkt sich den Assistenten als erledigt.
+    fn close_onboarding(self: &Rc<Self>) {
+        if !self.onboarding.replace(false) {
+            return;
+        }
+        settings::set_onboarding_done();
+        // Offene Probleme nach dem Assistenten wieder als Hinweis zeigen.
+        let (rules, private) = {
+            let state = self.state.borrow();
+            (state.firewall_rules, state.network_private)
+        };
+        if rules.is_some() {
+            let (ok, message) = diagnostics::firewall_message(private, rules);
+            self.firewall_result(ok, message);
+        }
         self.render();
     }
 

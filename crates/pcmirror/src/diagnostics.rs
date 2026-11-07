@@ -44,14 +44,25 @@ pub fn network_summary() -> String {
     lines.join("\n")
 }
 
+/// Nur die aktiven Adapter, ohne Erklärtext (für den Einrichtungsassistenten).
+pub fn adapter_summary() -> String {
+    let adapters = crate::network::ipv4_adapters();
+    if adapters.is_empty() {
+        return tr("Kein aktiver IPv4-Netzwerkadapter. Bitte den PC mit deinem Router verbinden.");
+    }
+    adapters
+        .into_iter()
+        .map(|(name, ip)| format!("{name}: {ip}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Prüft ohne Administratorrechte, ob die Regeln und ein privates Profil vorhanden sind.
 pub fn check_firewall() {
     let program = receiver::executable().display().to_string();
+    // Prüft Netzwerkprofil und Regeln getrennt, damit die Oberfläche beides anzeigen kann.
     let script = format!(
-        "$ErrorActionPreference='Stop'; $p={}; \
-         $r=@(Get-NetFirewallRule -DisplayName 'PC-Mirror*' -ErrorAction SilentlyContinue | Where-Object {{ $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' }} | Get-NetFirewallApplicationFilter | Where-Object {{ $_.Program -eq $p }}); \
-         $private=@(Get-NetConnectionProfile | Where-Object {{ $_.NetworkCategory -eq 'Private' }}); \
-         if($private.Count -eq 0){{Write-Output 'PUBLIC';exit 2}}; if($r.Count -ge 3){{Write-Output 'OK';exit 0}}; Write-Output 'MISSING';exit 1",
+        "$ErrorActionPreference='Stop'; $p={};          $r=@(Get-NetFirewallRule -DisplayName 'PC-Mirror*' -ErrorAction SilentlyContinue | Where-Object {{ $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' }} | Get-NetFirewallApplicationFilter | Where-Object {{ $_.Program -eq $p }});          $private=@(Get-NetConnectionProfile | Where-Object {{ $_.NetworkCategory -eq 'Private' }});          Write-Output ('PRIVATE=' + [int]($private.Count -gt 0)); Write-Output ('RULES=' + $r.Count); exit 0",
         ps_literal(&program)
     );
     std::thread::spawn(move || {
@@ -72,6 +83,8 @@ pub fn check_firewall() {
             Err(error) => {
                 events::post(Event::FirewallChecked {
                     ok: false,
+                    private: None,
+                    rules: None,
                     message: "Die Firewall-Prüfung konnte nicht starten. Bitte Diagnose öffnen.",
                     details: error.to_string(),
                 });
@@ -86,30 +99,46 @@ pub fn check_firewall() {
             let _ = child.kill();
         }
         let output = child.wait_with_output();
-        let (code, stdout, stderr) = match output {
+        let (stdout, stderr) = match output {
             Ok(o) => (
-                o.status.code(),
                 String::from_utf8_lossy(&o.stdout).into_owned(),
                 String::from_utf8_lossy(&o.stderr).into_owned(),
             ),
-            Err(e) => (None, String::new(), e.to_string()),
+            Err(e) => (String::new(), e.to_string()),
         };
-        let (ok, message) = if code == Some(0) && stdout.contains("OK") {
-            (
-                true,
-                "Firewall-Freigaben vorhanden · privates Netzwerk erkannt",
-            )
-        } else if stdout.contains("PUBLIC") {
-            (false, "Kein privates Netzwerk erkannt. Windows-Einstellungen → Netzwerk → Profil Privat wählen, wenn dies dein vertrauenswürdiges Heimnetz ist.")
-        } else {
-            (false, "Firewall-Freigabe fehlt oder ist nicht prüfbar. Über „Firewall einrichten“ freigeben. Windows fragt nach Administratorrechten.")
-        };
+        let (private, rules) = parse_check(&stdout);
+        let (ok, message) = firewall_message(private, rules);
         events::post(Event::FirewallChecked {
             ok,
+            private,
+            rules,
             message,
             details: stderr.trim().to_owned(),
         });
     });
+}
+
+/// Liest `PRIVATE=0|1` und `RULES=n` aus der Ausgabe der Prüfung.
+pub fn parse_check(output: &str) -> (Option<bool>, Option<bool>) {
+    let mut private = None;
+    let mut rules = None;
+    for line in output.lines() {
+        if let Some(value) = line.trim().strip_prefix("PRIVATE=") {
+            private = Some(value.trim() == "1");
+        } else if let Some(value) = line.trim().strip_prefix("RULES=") {
+            rules = value.trim().parse::<u32>().ok().map(|count| count >= 3);
+        }
+    }
+    (private, rules)
+}
+
+/// Wichtigster Hinweis zuerst: fehlende Freigabe, dann öffentliches Netzwerk.
+pub fn firewall_message(private: Option<bool>, rules: Option<bool>) -> (bool, &'static str) {
+    match (private, rules) {
+        (Some(true), Some(true)) => (true, "Firewall-Freigaben vorhanden · privates Netzwerk erkannt"),
+        (_, Some(false)) | (_, None) => (false, "Firewall-Freigabe fehlt oder ist nicht prüfbar. Über „Firewall einrichten“ freigeben. Windows fragt nach Administratorrechten."),
+        (_, Some(true)) => (false, "Kein privates Netzwerk erkannt. Windows-Einstellungen → Netzwerk → Profil Privat wählen, wenn dies dein vertrauenswürdiges Heimnetz ist."),
+    }
 }
 
 /// Richtet die Regeln mit UAC ein. Das Skript wird direkt übergeben, statt eine
@@ -183,6 +212,22 @@ mod tests {
         assert_eq!(ps_literal(r"C:\a'b\uxplay.exe"), r"'C:\a''b\uxplay.exe'");
         let script = firewall_script(r"C:\Users\O'Neil\uxplay.exe");
         assert!(script.contains(r"-LiteralPath 'C:\Users\O''Neil\uxplay.exe'"));
+    }
+
+    #[test]
+    fn check_output_is_parsed() {
+        let both = ["PRIVATE=1", "RULES=3", ""].join("\r\n");
+        assert_eq!(parse_check(&both), (Some(true), Some(true)));
+        let neither = ["PRIVATE=0", "RULES=0"].join("\n");
+        assert_eq!(parse_check(&neither), (Some(false), Some(false)));
+        assert_eq!(parse_check(""), (None, None));
+        assert!(firewall_message(Some(true), Some(true)).0);
+        assert!(firewall_message(Some(false), Some(true))
+            .1
+            .contains("privates Netzwerk"));
+        assert!(firewall_message(Some(true), Some(false))
+            .1
+            .contains("fehlt"));
     }
 
     #[test]

@@ -244,6 +244,18 @@ pub fn save_geometry(geometry: Geometry) {
     let _ = ini.write(&path);
 }
 
+/// Wurde der Einrichtungsassistent schon abgeschlossen oder übersprungen?
+pub fn onboarding_done() -> bool {
+    Ini::read(&ini_path()).bool("ui", "onboardingDone", false)
+}
+
+pub fn set_onboarding_done() {
+    let path = ini_path();
+    let mut ini = Ini::read(&path);
+    ini.set("ui", "onboardingDone", "true");
+    let _ = ini.write(&path);
+}
+
 fn bool_text(value: bool) -> &'static str {
     if value {
         "true"

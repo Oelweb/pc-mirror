@@ -222,6 +222,21 @@ pub fn message_box(text: &str, error: bool) {
     }
 }
 
+/// Öffnet eine Windows-Adresse wie `ms-settings:network-status`.
+pub fn open_uri(uri: &str) -> bool {
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            &HSTRING::from("open"),
+            &HSTRING::from(uri),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    result.0 as isize > 32
+}
+
 pub fn open_folder(path: &Path) -> bool {
     let result = unsafe {
         ShellExecuteW(
