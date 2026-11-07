@@ -28,6 +28,10 @@ fn main() {
         .run();
 
     let arguments: Vec<String> = std::env::args().collect();
+    // Erhöhter Hilfsprozess für die Firewall-Regeln: nur Regeln schreiben, keine Oberfläche.
+    if arguments.iter().any(|a| a == diagnostics::CONFIGURE_ARG) {
+        std::process::exit(diagnostics::apply_rules());
+    }
     let synthetic = arguments.iter().any(|a| a == "--test-pattern");
     let preview = arguments.iter().any(|a| a == "--ui-preview");
 

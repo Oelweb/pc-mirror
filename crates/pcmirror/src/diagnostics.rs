@@ -1,34 +1,143 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Netzwerkübersicht und Windows-Firewall: Prüfung ohne, Einrichtung mit UAC.
+//!
+//! Alles läuft über die Firewall- und Netzwerk-COM-Schnittstellen von Windows,
+//! ohne PowerShell: Der UAC-Dialog zeigt „PC-Mirror“ und Virenscanner sehen
+//! kein verstecktes Skript.
 use crate::events::{self, Event};
 use crate::i18n::tr;
 use crate::receiver;
-use base64::{engine::general_purpose::STANDARD, Engine};
-use std::os::windows::process::CommandExt;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
-use windows::core::HSTRING;
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_CANCELLED, WAIT_OBJECT_0};
+use std::path::Path;
+use windows::core::{Interface, BSTR, HSTRING, PCWSTR};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_CANCELLED, HANDLE, S_OK, VARIANT_TRUE, WAIT_OBJECT_0,
+};
+use windows::Win32::NetworkManagement::WindowsFirewall::{
+    INetFwPolicy2, INetFwRule, NetFwPolicy2, NetFwRule, NET_FW_ACTION_ALLOW,
+    NET_FW_PROFILE2_PRIVATE, NET_FW_RULE_DIR_IN,
+};
+use windows::Win32::Networking::NetworkListManager::{
+    INetworkListManager, NetworkListManager, NLM_ENUM_NETWORK_CONNECTED,
+    NLM_NETWORK_CATEGORY_PRIVATE,
+};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL,
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+};
+use windows::Win32::System::Ole::IEnumVARIANT;
 use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
+use windows::Win32::System::Variant::{VariantClear, VARIANT, VT_DISPATCH};
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Befehlszeilenschalter, mit dem sich PC-Mirror selbst erhöht für die Regeln startet.
+pub const CONFIGURE_ARG: &str = "--configure-firewall";
 
-fn powershell() -> String {
-    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    format!(r"{root}\System32\WindowsPowerShell\v1.0\powershell.exe")
+const RULE_PREFIX: &str = "PC-Mirror";
+const PROTOCOL_TCP: i32 = 6;
+const PROTOCOL_UDP: i32 = 17;
+
+/// Die drei Freigaben: nur eingehend, nur Profil Privat, nur lokales Subnetz.
+const RULES: [(&str, i32, &str); 3] = [
+    ("PC-Mirror AirPlay TCP", PROTOCOL_TCP, "48000-48002"),
+    ("PC-Mirror AirPlay UDP", PROTOCOL_UDP, "48000-48002"),
+    ("PC-Mirror mDNS", PROTOCOL_UDP, "5353"),
+];
+
+/// COM für die Dauer eines Hintergrundaufrufs.
+struct Com;
+
+impl Com {
+    fn init() -> Option<Self> {
+        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+            .is_ok()
+            .then_some(Com)
+    }
 }
 
-/// Pfad als PowerShell-Literal in einfachen Anführungszeichen – nie als Code.
-fn ps_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+impl Drop for Com {
+    fn drop(&mut self) {
+        unsafe { CoUninitialize() };
+    }
 }
 
-/// PowerShell erwartet für -EncodedCommand UTF-16LE in Base64.
-fn encoded(script: &str) -> String {
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    STANDARD.encode(bytes)
+fn same_path(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// Unsere Regeln für genau diese uxplay.exe (auch die von älteren Versionen angelegten).
+/// Die Regelsammlung bleibt dabei bestehen: Die Regelobjekte gehören zu ihr.
+unsafe fn own_rules(
+    policy: &INetFwPolicy2,
+    program: &str,
+) -> windows::core::Result<Vec<INetFwRule>> {
+    let collection = policy.Rules()?;
+    let enumerator: IEnumVARIANT = collection._NewEnum()?.cast()?;
+    let mut rules = Vec::new();
+    loop {
+        let mut items = [VARIANT::default()];
+        let mut fetched = 0u32;
+        if enumerator.Next(&mut items, &mut fetched) != S_OK || fetched == 0 {
+            break;
+        }
+        let item = &mut items[0];
+        let rule = if item.Anonymous.Anonymous.vt == VT_DISPATCH {
+            let raw = item.Anonymous.Anonymous.Anonymous.pdispVal.as_ref().cloned();
+            raw.and_then(|d| d.cast::<INetFwRule>().ok())
+        } else {
+            None
+        };
+        let _ = VariantClear(item);
+        let Some(rule) = rule else { continue };
+        let name = rule.Name().map(|n| n.to_string()).unwrap_or_default();
+        if !name.starts_with(RULE_PREFIX) {
+            continue;
+        }
+        let app = rule.ApplicationName().map(|n| n.to_string()).unwrap_or_default();
+        if same_path(&app, program) {
+            rules.push(rule);
+        }
+    }
+    drop(collection);
+    Ok(rules)
+}
+
+fn private_network() -> Option<bool> {
+    unsafe {
+        let manager: INetworkListManager =
+            CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL).ok()?;
+        let networks = manager.GetNetworks(NLM_ENUM_NETWORK_CONNECTED).ok()?;
+        let mut private = false;
+        loop {
+            let mut item = [None];
+            let mut fetched = 0u32;
+            if networks.Next(&mut item, Some(&mut fetched)).is_err() || fetched == 0 {
+                break;
+            }
+            if let Some(network) = item[0].take() {
+                if network.GetCategory().ok() == Some(NLM_NETWORK_CATEGORY_PRIVATE) {
+                    private = true;
+                }
+            }
+        }
+        Some(private)
+    }
+}
+
+fn rules_present(program: &str) -> Result<bool, String> {
+    unsafe {
+        let policy: INetFwPolicy2 = CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER)
+            .map_err(|e| e.to_string())?;
+        let rules = own_rules(&policy, program).map_err(|e| e.to_string())?;
+        let active = rules
+            .iter()
+            .filter(|rule| {
+                rule.Enabled().ok() == Some(VARIANT_TRUE)
+                    && rule.Action().ok() == Some(NET_FW_ACTION_ALLOW)
+            })
+            .count();
+        Ok(active >= RULES.len())
+    }
 }
 
 pub fn network_summary() -> String {
@@ -60,76 +169,31 @@ pub fn adapter_summary() -> String {
 /// Prüft ohne Administratorrechte, ob die Regeln und ein privates Profil vorhanden sind.
 pub fn check_firewall() {
     let program = receiver::executable().display().to_string();
-    // Prüft Netzwerkprofil und Regeln getrennt, damit die Oberfläche beides anzeigen kann.
-    let script = format!(
-        "$ErrorActionPreference='Stop'; $p={};          $r=@(Get-NetFirewallRule -DisplayName 'PC-Mirror*' -ErrorAction SilentlyContinue | Where-Object {{ $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' }} | Get-NetFirewallApplicationFilter | Where-Object {{ $_.Program -eq $p }});          $private=@(Get-NetConnectionProfile | Where-Object {{ $_.NetworkCategory -eq 'Private' }});          Write-Output ('PRIVATE=' + [int]($private.Count -gt 0)); Write-Output ('RULES=' + $r.Count); exit 0",
-        ps_literal(&program)
-    );
     std::thread::spawn(move || {
-        let child = Command::new(powershell())
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-EncodedCommand",
-                &encoded(&script),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn();
-        let mut child = match child {
-            Ok(child) => child,
-            Err(error) => {
-                events::post(Event::FirewallChecked {
-                    ok: false,
-                    private: None,
-                    rules: None,
-                    message: "Die Firewall-Prüfung konnte nicht starten. Bitte Diagnose öffnen.",
-                    details: error.to_string(),
-                });
-                return;
-            }
+        let Some(_com) = Com::init() else {
+            events::post(Event::FirewallChecked {
+                ok: false,
+                private: None,
+                rules: None,
+                message: "Die Firewall-Prüfung konnte nicht starten. Bitte Diagnose öffnen.",
+                details: "COM nicht verfügbar".into(),
+            });
+            return;
         };
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if child.try_wait().ok().flatten().is_none() {
-            let _ = child.kill();
-        }
-        let output = child.wait_with_output();
-        let (stdout, stderr) = match output {
-            Ok(o) => (
-                String::from_utf8_lossy(&o.stdout).into_owned(),
-                String::from_utf8_lossy(&o.stderr).into_owned(),
-            ),
-            Err(e) => (String::new(), e.to_string()),
+        let private = private_network();
+        let (rules, details) = match rules_present(&program) {
+            Ok(present) => (Some(present), String::new()),
+            Err(error) => (None, error),
         };
-        let (private, rules) = parse_check(&stdout);
         let (ok, message) = firewall_message(private, rules);
         events::post(Event::FirewallChecked {
             ok,
             private,
             rules,
             message,
-            details: stderr.trim().to_owned(),
+            details,
         });
     });
-}
-
-/// Liest `PRIVATE=0|1` und `RULES=n` aus der Ausgabe der Prüfung.
-pub fn parse_check(output: &str) -> (Option<bool>, Option<bool>) {
-    let mut private = None;
-    let mut rules = None;
-    for line in output.lines() {
-        if let Some(value) = line.trim().strip_prefix("PRIVATE=") {
-            private = Some(value.trim() == "1");
-        } else if let Some(value) = line.trim().strip_prefix("RULES=") {
-            rules = value.trim().parse::<u32>().ok().map(|count| count >= 3);
-        }
-    }
-    (private, rules)
 }
 
 /// Wichtigster Hinweis zuerst: fehlende Freigabe, dann öffentliches Netzwerk.
@@ -141,24 +205,24 @@ pub fn firewall_message(private: Option<bool>, rules: Option<bool>) -> (bool, &'
     }
 }
 
-/// Richtet die Regeln mit UAC ein. Das Skript wird direkt übergeben, statt eine
-/// Skriptdatei aus dem (vom Benutzer beschreibbaren) Programmordner erhöht auszuführen.
+/// Startet PC-Mirror selbst mit Administratorrechten, um die Regeln anzulegen.
+/// Windows zeigt dabei Name und Symbol von PC-Mirror statt einer PowerShell.
 pub fn configure_firewall() {
-    let receiver = receiver::executable().display().to_string();
-    let script = firewall_script(&receiver);
-    let parameters = format!(
-        "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {}",
-        encoded(&script)
-    );
-    let file = HSTRING::from(powershell());
+    let Ok(exe) = std::env::current_exe() else {
+        events::post(Event::FirewallConfigured {
+            result: Err("Windows konnte die Firewall-Einrichtung nicht starten."),
+        });
+        return;
+    };
+    let file = HSTRING::from(exe.as_os_str());
     let verb = HSTRING::from("runas");
-    let parameters = HSTRING::from(parameters);
+    let parameters = HSTRING::from(CONFIGURE_ARG);
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS,
-        lpVerb: windows::core::PCWSTR(verb.as_ptr()),
-        lpFile: windows::core::PCWSTR(file.as_ptr()),
-        lpParameters: windows::core::PCWSTR(parameters.as_ptr()),
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(parameters.as_ptr()),
         nShow: SW_HIDE.0,
         ..Default::default()
     };
@@ -175,7 +239,7 @@ pub fn configure_firewall() {
     }
     let process = info.hProcess.0 as isize;
     std::thread::spawn(move || {
-        let handle = windows::Win32::Foundation::HANDLE(process as *mut _);
+        let handle = HANDLE(process as *mut _);
         let mut code = 1u32;
         unsafe {
             if WaitForSingleObject(handle, INFINITE) == WAIT_OBJECT_0 {
@@ -187,20 +251,56 @@ pub fn configure_firewall() {
     });
 }
 
-/// Regeln nur für genau diese uxplay.exe, Profil Privat, lokales Subnetz.
-pub fn firewall_script(receiver: &str) -> String {
-    format!(
-        r#"$ErrorActionPreference = 'Stop'
-$resolved = (Resolve-Path -LiteralPath {path}).Path
-if ([IO.Path]::GetFileName($resolved) -ne 'uxplay.exe') {{ exit 3 }}
-$prefix = 'PC-Mirror-' + ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($resolved.ToLowerInvariant())) -replace '[^a-zA-Z0-9]','')
-foreach ($suffix in @('TCP','UDP','mDNS')) {{ Get-NetFirewallRule -Name "$prefix-$suffix" -ErrorAction SilentlyContinue | Remove-NetFirewallRule }}
-New-NetFirewallRule -Name "$prefix-TCP" -DisplayName 'PC-Mirror AirPlay TCP' -Direction Inbound -Action Allow -Profile Private -Program $resolved -Protocol TCP -LocalPort '48000-48002' -RemoteAddress LocalSubnet | Out-Null
-New-NetFirewallRule -Name "$prefix-UDP" -DisplayName 'PC-Mirror AirPlay UDP' -Direction Inbound -Action Allow -Profile Private -Program $resolved -Protocol UDP -LocalPort '48000-48002' -RemoteAddress LocalSubnet | Out-Null
-New-NetFirewallRule -Name "$prefix-mDNS" -DisplayName 'PC-Mirror mDNS' -Direction Inbound -Action Allow -Profile Private -Program $resolved -Protocol UDP -LocalPort 5353 -RemoteAddress LocalSubnet | Out-Null
-exit 0"#,
-        path = ps_literal(receiver)
-    )
+/// Läuft im erhöhten Hilfsprozess (`PC-Mirror.exe --configure-firewall`).
+/// Exit-Code: 0 = in Ordnung, 2 = Firewall-Fehler, 3 = Empfänger fehlt.
+pub fn apply_rules() -> i32 {
+    let receiver = receiver::executable();
+    if receiver.file_name().and_then(|n| n.to_str()) != Some("uxplay.exe") || !receiver.is_file()
+    {
+        return 3;
+    }
+    let Some(_com) = Com::init() else { return 2 };
+    match unsafe { write_rules(&receiver) } {
+        Ok(()) => 0,
+        Err(_) => 2,
+    }
+}
+
+/// Vorhandene Regeln werden aktualisiert statt gelöscht, fehlende neu angelegt.
+unsafe fn write_rules(receiver: &Path) -> windows::core::Result<()> {
+    let program = receiver.display().to_string();
+    let policy: INetFwPolicy2 = CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER)?;
+    let existing = own_rules(&policy, &program)?;
+    for (name, protocol, ports) in RULES {
+        let found = existing
+            .iter()
+            .find(|rule| rule.Name().map(|n| n.to_string()).unwrap_or_default() == name)
+            .cloned();
+        let (rule, new) = match found {
+            Some(rule) => (rule, false),
+            None => (
+                CoCreateInstance::<_, INetFwRule>(&NetFwRule, None, CLSCTX_INPROC_SERVER)?,
+                true,
+            ),
+        };
+        rule.SetName(&BSTR::from(name))?;
+        rule.SetDescription(&BSTR::from(
+            "Erlaubt iPhone/iPad im Heimnetz, per AirPlay an PC-Mirror zu senden.",
+        ))?;
+        rule.SetGrouping(&BSTR::from("PC-Mirror"))?;
+        rule.SetApplicationName(&BSTR::from(program.as_str()))?;
+        rule.SetProtocol(protocol)?;
+        rule.SetLocalPorts(&BSTR::from(ports))?;
+        rule.SetRemoteAddresses(&BSTR::from("LocalSubnet"))?;
+        rule.SetDirection(NET_FW_RULE_DIR_IN)?;
+        rule.SetAction(NET_FW_ACTION_ALLOW)?;
+        rule.SetProfiles(NET_FW_PROFILE2_PRIVATE.0)?;
+        rule.SetEnabled(VARIANT_TRUE)?;
+        if new {
+            policy.Rules()?.Add(&rule)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -208,30 +308,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn paths_are_literals_not_code() {
-        assert_eq!(ps_literal(r"C:\a'b\uxplay.exe"), r"'C:\a''b\uxplay.exe'");
-        let script = firewall_script(r"C:\Users\O'Neil\uxplay.exe");
-        assert!(script.contains(r"-LiteralPath 'C:\Users\O''Neil\uxplay.exe'"));
-    }
-
-    #[test]
-    fn check_output_is_parsed() {
-        let both = ["PRIVATE=1", "RULES=3", ""].join("\r\n");
-        assert_eq!(parse_check(&both), (Some(true), Some(true)));
-        let neither = ["PRIVATE=0", "RULES=0"].join("\n");
-        assert_eq!(parse_check(&neither), (Some(false), Some(false)));
-        assert_eq!(parse_check(""), (None, None));
+    fn messages_follow_state() {
         assert!(firewall_message(Some(true), Some(true)).0);
         assert!(firewall_message(Some(false), Some(true))
             .1
             .contains("privates Netzwerk"));
-        assert!(firewall_message(Some(true), Some(false))
-            .1
-            .contains("fehlt"));
+        assert!(firewall_message(Some(true), Some(false)).1.contains("fehlt"));
+        assert!(!firewall_message(None, None).0);
     }
 
     #[test]
-    fn encoded_command_is_utf16le_base64() {
-        assert_eq!(encoded("ab"), "YQBiAA==");
+    fn paths_compare_case_insensitive() {
+        assert!(same_path(r"C:\Users\Jörg\uxplay.exe", r"c:\users\JÖRG\UXPLAY.EXE"));
+        assert!(!same_path(r"C:\a\uxplay.exe", r"C:\b\uxplay.exe"));
+    }
+
+    /// Liest die echten Regeln ohne Administratorrechte (prüft die COM-Anbindung).
+    #[test]
+    fn reads_firewall_without_admin() {
+        let _com = Com::init().expect("COM");
+        assert_eq!(rules_present(r"C:\nicht\vorhanden\uxplay.exe"), Ok(false));
+        assert!(private_network().is_some());
+        // Auf einem PC mit installiertem PC-Mirror: dessen Regeln werden erkannt.
+        if let Ok(base) = std::env::var("LOCALAPPDATA") {
+            let installed = format!(r"{base}\PCMirror\current\uxplay.exe");
+            if Path::new(&installed).is_file() {
+                eprintln!("installiert: {installed} -> {:?}", rules_present(&installed));
+            }
+        }
     }
 }

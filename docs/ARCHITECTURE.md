@@ -9,7 +9,7 @@ PC-Mirror.exe (Rust, Slint)                     uxplay.exe (C/C++, UxPlay 1.74)
 ├─ receiver.rs  ── stdin: STOP/MUTE/SNAPSHOT/IPAD_FILL ──▶
 │               ◀── stdout: PCMIRROR|READY/FRAME/IDLE/PIN/MUTED/SNAPSHOT
 ├─ updater.rs + signed_source.rs ── HTTPS ──▶ pcmirror.oel.best (Velopack-Feed + .sig)
-└─ diagnostics.rs ── PowerShell (Prüfung) / UAC (Regeln)
+└─ diagnostics.rs ── Firewall-/Netzwerk-COM (Prüfung) / UAC (Regeln)
 ```
 
 Der Empfänger bleibt ein **eigener Prozess**: Ein Absturz im Codec reißt die Oberfläche nicht mit. Ein Windows-Job (`KILL_ON_JOB_CLOSE`) beendet `uxplay.exe` zuverlässig, auch wenn die App abstürzt. Es gibt keine zusätzlichen Netzwerk-Steuerports.
@@ -38,7 +38,7 @@ Die App linkt die C-Laufzeit statisch und lädt nur Windows-Systembibliotheken (
 ## Sicherheit
 
 - Update-Feed: Ed25519-Signatur (`pcmirror-sign`), öffentlicher Schlüssel im Programm, SHA-256 für jedes Paket Pflicht, Paketnamen ohne Pfadbestandteile.
-- Firewall: Regeln nur für genau diese `uxplay.exe`, Profil Privat, lokales Subnetz. Das erhöhte Skript wird direkt als `-EncodedCommand` übergeben; Pfade sind PowerShell-Literale. Es wird keine Skriptdatei aus dem beschreibbaren Programmordner erhöht ausgeführt.
+- Firewall: Regeln nur für genau diese `uxplay.exe`, Profil Privat, lokales Subnetz. Prüfung und Einrichtung laufen über die Windows-Firewall-COM-Schnittstelle (`INetFwPolicy2`), ohne PowerShell. Zum Einrichten startet sich `PC-Mirror.exe --configure-firewall` per UAC selbst; der Dialog zeigt dadurch PC-Mirror als Programm. Vorhandene Regeln werden aktualisiert, nicht gelöscht.
 - PIN: per DPAPI an das Windows-Benutzerkonto gebunden.
 
 ## Empfänger (UxPlay)

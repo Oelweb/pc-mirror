@@ -61,7 +61,7 @@ if (!$SkipInstaller) {
     $releases = if ($ReleaseDirectory) { [IO.Path]::GetFullPath($ReleaseDirectory) } else { Join-Path $projectRoot 'dist\releases' }
     $deltaMode = if ($EnableDeltas) { 'BestSpeed' } else { 'None' }
     New-Item -ItemType Directory -Force -Path $releases | Out-Null
-    & $dotnet "$projectRoot\.tools\vpk\tools\net8.0\any\vpk.dll" pack --packId PCMirror --packTitle PC-Mirror --packVersion $version --packDir $output --mainExe PC-Mirror.exe --runtime win-x64 --channel win --delta $deltaMode --noPortable --icon "$projectRoot\assets\app.ico" --outputDir $releases --yes --skip-updates
+    & $dotnet "$projectRoot\.tools\vpk\tools\net8.0\any\vpk.dll" pack --packId PCMirror --packTitle PC-Mirror --packAuthors Oelweb --splashImage "$projectRoot\packaging\splash.png" --splashProgressColor "#2F7BFF" --packVersion $version --packDir $output --mainExe PC-Mirror.exe --runtime win-x64 --channel win --delta $deltaMode --noPortable --icon "$projectRoot\assets\app.ico" --outputDir $releases --yes --skip-updates
     if ($LASTEXITCODE -ne 0) { throw 'Velopack-Installer konnte nicht erstellt werden.' }
     Copy-Item -LiteralPath "$projectRoot\dist\PC-Mirror-$version-source.zip" -Destination $releases
     @("App/Backend source: https://pcmirror.oel.best/PC-Mirror-$version-source.zip",
