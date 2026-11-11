@@ -75,7 +75,6 @@
   "Update bereit (v%1)": "Update ready (v%1)",
   "Der Logordner ist nicht beschreibbar:\n%1\n%2": "The log folder is not writable:\n%1\n%2",
   "PC-Mirror läuft bereits. Bitte das vorhandene Fenster über die Taskleiste öffnen.": "PC-Mirror is already running. Open the existing window from the taskbar.",
-  "mDNS: in UxPlay integriert · Bonjour ist nicht erforderlich\nAirPlay: TCP/UDP 48000–48002 · Discovery: UDP 5353\nFirewall-Freigaben gelten nur im privaten lokalen Netz.": "mDNS: built into UxPlay · Bonjour is not required\nAirPlay: TCP/UDP 48000–48002 · Discovery: UDP 5353\nFirewall rules apply only to the private local network.",
   "Nicht sichtbar: gleiches Netz, Profil Privat, VPN/Gastnetz/AP-Isolation prüfen.\nSchwarzes Bild: Home-Bildschirm testen; geschützte Inhalte können gesperrt sein.\nKein Ton: Windows-Ausgabe und Lautstärkemixer prüfen.\nRuckeln: 720p/30 FPS wählen, PC per Ethernet anbinden.\nMehr Hilfe: README im Installationsordner.": "Not listed: check the local network, Private profile, VPN, guest network and access point isolation.\nBlack screen: try the Home Screen; protected content may be blocked.\nNo sound: check the Windows output device and volume mixer.\nStuttering: select 720p/30 FPS and connect the PC using Ethernet.\nMore help: see the README in the installation folder.",
   "Anleitung anzeigen": "Show instructions",
   "Anleitung ausblenden": "Hide instructions",
@@ -133,5 +132,6 @@
   "Firewall-Status nicht prüfbar. Falls die Verbindung nicht klappt: „Firewall einrichten“.": "Firewall status could not be checked. If connecting fails: “Configure firewall”.",
   "Die Windows-Firewall blockiert den Empfänger (Block-Regel). Über „Firewall einrichten“ beheben.": "Windows Firewall is blocking the receiver (block rule). Use “Configure firewall” to fix it.",
   "Klassischer Empfänger": "Classic receiver",
-  "Alter UxPlay-Empfänger statt des neuen Rust-Empfängers. Nur einschalten, wenn die Verbindung sonst nicht klappt.": "Old UxPlay receiver instead of the new Rust receiver. Only turn on if connecting does not work otherwise."
+  "Alter UxPlay-Empfänger statt des neuen Rust-Empfängers. Nur einschalten, wenn die Verbindung sonst nicht klappt.": "Old UxPlay receiver instead of the new Rust receiver. Only turn on if connecting does not work otherwise.",
+  "mDNS: im Empfänger integriert · Bonjour ist nicht erforderlich\nAirPlay: TCP/UDP 48000–48002 · Discovery: UDP 5353\nFirewall-Freigaben gelten nur im privaten lokalen Netz.": "mDNS: built into the receiver · Bonjour is not required\nAirPlay: TCP/UDP 48000–48002 · Discovery: UDP 5353\nFirewall rules apply only to the private local network."
 }

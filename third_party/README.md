@@ -1,5 +1,7 @@
 # Herkunft
 
+Seit PC-Mirror 0.4.0 ist der Standard-Empfänger in Rust geschrieben (`crates/pcmirror-receiver`); er überträgt Protokoll, Pairing, FairPlay (`playfair`) und Stromverarbeitung aus UxPlay nach Rust und steht ebenfalls unter GPL-3.0-or-later. UxPlay selbst wird weiter als klassischer Empfänger (`uxplay-classic.exe`) mitgeliefert.
+
 `uxplay/`: https://github.com/FDH2/UxPlay
 
 Basis-Commit: `116e39069e40f09350a372233937a55c890a02f8`

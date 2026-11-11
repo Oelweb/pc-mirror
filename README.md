@@ -1,6 +1,6 @@
 # PC-Mirror
 
-Native Windows-App für iPhone- und iPad-Bildschirmsynchronisierung mit Ton. Ab Version **0.3.0** ist die App in **Rust** geschrieben (Oberfläche mit [Slint](https://slint.dev)); der AirPlay-Empfang läuft weiterhin über das bewährte UxPlay mit GStreamer als eigener Prozess. Keine Webseite, kein Browser-Frontend, kein Qt mehr.
+Native Windows-App für iPhone- und iPad-Bildschirmsynchronisierung mit Ton. App und AirPlay-Empfänger sind in **Rust** geschrieben (Oberfläche mit [Slint](https://slint.dev), Empfänger ab **0.4.0**); Video und Ton gibt die mitgelieferte GStreamer-Runtime aus. Der frühere C-Empfänger (UxPlay) liegt als Ausweichlösung bei. Keine Webseite, kein Browser-Frontend, kein Qt mehr.
 
 ![Wartebildschirm](docs/screenshots/wartebildschirm.jpg)
 
@@ -8,7 +8,7 @@ Native Windows-App für iPhone- und iPad-Bildschirmsynchronisierung mit Ton. Ab 
 
 1. `PCMirror-win-Setup.exe` von [pcmirror.oel.best](https://pcmirror.oel.best/PCMirror-win-Setup.exe) starten. Ziel: Windows 10 ab Build 19041 oder Windows 11, x64. Empfänger, GStreamer und Codecs sind enthalten; kein Bonjour, kein .NET, keine VC++-Runtime nötig. Bestehende Installationen ab 0.2.5 aktualisieren sich automatisch.
 2. PC und iPhone/iPad am selben Router betreiben. Ethernet am PC ist erlaubt. Kein isoliertes Gastnetz; VPN kann die Erkennung blockieren. Im vertrauenswürdigen Heimnetz das Windows-Netzwerkprofil **Privat** wählen.
-3. Bei Firewall-Hinweis **Diagnose → Firewall einrichten** wählen. Windows fragt nach Administratorrechten. Die App ändert das Netzwerkprofil nicht selbst.
+3. Bei Firewall-Hinweis **Firewall einrichten** wählen. Windows fragt nach Administratorrechten. Ist das Netz als „Öffentlich“ eingestuft, bietet die App **Netzwerk freigeben** an (stuft es nach Rückfrage als privat ein).
 4. iPhone → Kontrollzentrum → **Bildschirmsynchronisierung** → **PC-Mirror**.
 
 Beim Spiegeln füllt das Bild die Anzeige ohne Verzerrung. Die schmale Leiste mit Vollbild, Screenshot, Ton und Trennen erscheint bei Mausbewegung und verschwindet nach etwa 2,6 Sekunden.
@@ -27,7 +27,7 @@ Qualität: 720p/30, 1080p/60 oder experimentell 4K/H.265/60; die tatsächliche A
 
 ## Netzwerk und Firewall
 
-UxPlay kündigt `_airplay._tcp` und `_raop._tcp` über seinen eingebauten mDNS-Responder an. Ports: **TCP/UDP 48000–48002** und **UDP 5353**. Die Regeln gelten nur für die konkrete `uxplay.exe`, Profil **Privat**, Gegenstelle **LocalSubnet**. Programmpfad: `%LOCALAPPDATA%\PCMirror\current` (bleibt bei Updates gleich).
+Der Empfänger kündigt `_airplay._tcp` und `_raop._tcp` über seinen eingebauten mDNS-Responder auf allen echten Netzwerkadaptern an (VPN-Adapter wie Radmin oder Hamachi ausgenommen). Ports: **TCP/UDP 48000–48002** und **UDP 5353**. Die Regeln gelten nur für die mitgelieferten Empfänger (`uxplay.exe`, `uxplay-classic.exe`), Profil **Privat**, Gegenstelle **LocalSubnet**. Die Prüfung erkennt auch Freigaben aus dem Windows-Dialog und Block-Regeln; nach einer erfolgreichen Verbindung erscheint kein Firewall-Hinweis mehr. Programmpfad: `%LOCALAPPDATA%\PCMirror\current` (bleibt bei Updates gleich).
 
 ## Automatische Updates
 
@@ -41,7 +41,8 @@ Sicherheit: Der Update-Feed `releases.win.json` ist mit einem **Ed25519-Schlüss
 |---|---|
 | App (Rust, Slint) | `crates/pcmirror` – Oberfläche `ui/app.slint`, Logik `src/` |
 | Signaturwerkzeug | `crates/pcmirror-sign` (`keygen`, `sign`, `verify`) |
-| AirPlay-Empfänger | `third_party/uxplay` (C/C++, modifiziertes UxPlay 1.74) |
+| AirPlay-Empfänger (Rust) | `crates/pcmirror-receiver` – Protokoll, Pairing, FairPlay, Video/Ton |
+| Klassischer Empfänger | `third_party/uxplay` (C/C++, modifiziertes UxPlay 1.74, Ausweichlösung) |
 | Build/Release | `scripts/` |
 | Tests | `cargo test`, `tests/` |
 
@@ -56,7 +57,7 @@ cargo test --workspace
 cargo build --release -p pcmirror
 ```
 
-`target\release\PC-Mirror.exe` neben eine vorhandene `uxplay.exe` samt Runtime legen, um die App zu starten. Für reine Layoutprüfung: `PC-Mirror.exe --ui-preview`; für Videoeinbettung ohne iPhone: `--test-pattern`.
+`target\release\PC-Mirror.exe` und `target\release\pcmirror-receiver.exe` (als `uxplay.exe`) neben eine vorhandene GStreamer-Runtime legen, um die App zu starten. Tests ohne iPhone: `python tests/airplay_e2e.py --package <Paket>` (nachgebauter Sender, siehe [Architektur](docs/ARCHITECTURE.md)). Für reine Layoutprüfung: `PC-Mirror.exe --ui-preview`; für Videoeinbettung ohne iPhone: `--test-pattern`.
 
 Paket und Installer (lokal, ohne Upload):
 
