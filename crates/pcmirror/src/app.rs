@@ -231,7 +231,8 @@ impl App {
         main.on_error_action(move || {
             if let Some(app) = w.upgrade() {
                 if app.state.borrow().firewall_banner {
-                    app.configure_firewall();
+                    let public = app.public_network();
+                    app.configure_firewall(public);
                 } else {
                     app.restart();
                 }
@@ -240,7 +241,8 @@ impl App {
         let w = self.weak();
         main.on_onboarding_configure_firewall(move || {
             if let Some(app) = w.upgrade() {
-                app.configure_firewall();
+                let public = app.public_network();
+                app.configure_firewall(public);
             }
         });
         let w = self.weak();
@@ -251,8 +253,12 @@ impl App {
                 app.check_firewall();
             }
         });
-        main.on_onboarding_network_settings(|| {
-            win::open_uri("ms-settings:network-status");
+        let w = self.weak();
+        main.on_onboarding_network_settings(move || {
+            if let Some(app) = w.upgrade() {
+                // Freigabe und Einstufung als Heimnetz in einem UAC-Schritt.
+                app.configure_firewall(true);
+            }
         });
         let w = self.weak();
         main.on_onboarding_finish(move || {
@@ -407,10 +413,22 @@ impl App {
         self.render();
     }
 
-    fn configure_firewall(&self) {
+    /// `make_private`: verbundene öffentliche Netzwerke zusätzlich als privat einstufen.
+    fn configure_firewall(&self, make_private: bool) {
         self.state.borrow_mut().firewall_checking = true;
-        diagnostics::configure_firewall();
+        logging::line(if make_private {
+            "Firewall-Einrichtung gestartet (mit Netzwerk als privat)"
+        } else {
+            "Firewall-Einrichtung gestartet"
+        });
+        diagnostics::configure_firewall(make_private);
         self.render();
+    }
+
+    /// Öffentliches Netz aktiv und Empfänger dort nicht erreichbar.
+    fn public_network(&self) -> bool {
+        let state = self.state.borrow();
+        state.network_private == Some(false) && state.firewall_rules != Some(true)
     }
 
     // ------------------------------------------------------------ Ereignisse
@@ -460,7 +478,16 @@ impl App {
             }
             Event::FirewallConfigured { result } => match result {
                 Ok(code) => {
-                    logging::line(&format!("Firewall-Helfer beendet, Code {code}"));
+                    logging::line(&match code {
+                        0 => "Firewall-Einrichtung erfolgreich".to_owned(),
+                        3 => "Firewall-Einrichtung: Empfänger nicht gefunden".to_owned(),
+                        4 => "Firewall eingerichtet, Netzwerk konnte nicht als privat eingestuft werden".to_owned(),
+                        _ => format!("Firewall-Einrichtung fehlgeschlagen, Code {code}"),
+                    });
+                    if code == 4 {
+                        // Einstufung ging nicht automatisch: Windows-Seite zum Umstellen öffnen.
+                        win::open_uri("ms-settings:network-status");
+                    }
                     self.check_firewall();
                 }
                 Err(message) => {
@@ -503,12 +530,21 @@ impl App {
             match notice {
                 Notice::Ready => self.set_status("Bereit", WAITING),
                 Notice::Frame(width, height) => {
+                    let first = !self.state.borrow().streaming;
                     self.set_streaming(true);
                     self.state.borrow_mut().pin = None;
                     self.set_status("Verbunden", CONNECTED);
-                    logging::line(&format!("Videoframe empfangen: {width} × {height}"));
+                    if first {
+                        logging::line(&format!("Verbindung hergestellt: Bild {width} × {height}"));
+                        self.connection_verified();
+                    } else {
+                        logging::line(&format!("Bildgröße geändert: {width} × {height}"));
+                    }
                 }
                 Notice::Idle => {
+                    if self.state.borrow().streaming {
+                        logging::line("Verbindung beendet");
+                    }
                     self.set_streaming(false);
                     self.set_status("Bereit für eine neue Verbindung", WAITING);
                 }
@@ -577,12 +613,29 @@ impl App {
         self.render();
     }
 
+    /// Eine echte Verbindung beweist, dass Firewall und Netzwerk passen: Warnung weg
+    /// und gemerkt, damit eine ungenaue Prüfung später keinen Fehlalarm mehr zeigt.
+    fn connection_verified(self: &Rc<Self>) {
+        if self.synthetic || self.preview {
+            return;
+        }
+        if !settings::connection_verified() {
+            settings::set_connection_verified();
+        }
+        let mut state = self.state.borrow_mut();
+        if state.firewall_banner {
+            state.firewall_banner = false;
+            state.error = None;
+        }
+    }
+
     fn firewall_result(self: &Rc<Self>, ok: bool, message: &'static str) {
         {
             let mut state = self.state.borrow_mut();
             state.firewall_status = Text::new(message);
             let onboarding = self.onboarding.get();
-            if !ok && !self.synthetic && !self.preview && !onboarding {
+            let verified = state.streaming || settings::connection_verified();
+            if !ok && !self.synthetic && !self.preview && !onboarding && !verified {
                 state.firewall_banner = true;
                 state.error = Some(Text::new(message));
             } else if ok && state.firewall_banner {
@@ -969,7 +1022,12 @@ impl App {
         );
         main.set_error_visible(state.error.is_some());
         main.set_error_action_text(
-            tr(if state.firewall_banner {
+            tr(if state.firewall_banner
+                && state.network_private == Some(false)
+                && state.firewall_rules != Some(true)
+            {
+                "Netzwerk freigeben"
+            } else if state.firewall_banner {
                 "Firewall einrichten"
             } else {
                 "Neu starten"
@@ -1002,24 +1060,11 @@ impl App {
             .set_can_shoot(state.streaming && state.snapshot.is_none() && !state.converting);
         self.toolbar.set_can_disconnect(state.streaming);
 
+        // Maßgeblich ist, ob der Empfänger im aktiven Profil erreichbar ist.
         let firewall_state = if state.firewall_checking {
             0
         } else {
-            check_state(
-                state
-                    .firewall_rules
-                    .zip(state.network_private)
-                    .map(|(r, p)| r && p)
-                    .or(
-                        if state.firewall_rules == Some(false)
-                            || state.network_private == Some(false)
-                        {
-                            Some(false)
-                        } else {
-                            None
-                        },
-                    ),
-            )
+            check_state(state.firewall_rules)
         };
         let firewall_text = if state.firewall_checking {
             tr("Wird geprüft …")
@@ -1038,14 +1083,16 @@ impl App {
             window.set_onboarding_device(state.settings.name.clone().into());
             let network = if state.firewall_checking {
                 0
+            } else if state.firewall_rules == Some(true) {
+                1
             } else {
                 check_state(state.network_private)
             };
             window.set_onboarding_network_state(network);
             window.set_onboarding_network_text(
                 tr(match network {
-                    1 => "Privates Netzwerk erkannt.",
-                    2 => "Öffentliches Netzwerk: In Windows auf „Privat“ stellen, wenn es dein Heimnetz ist.",
+                    1 => "Netzwerk passt.",
+                    2 => "Öffentliches Netzwerk: Als privates Heimnetz einstufen, wenn es dein Heimnetz ist.",
                     _ => "Wird geprüft …",
                 })
                 .into(),
@@ -1226,7 +1273,8 @@ impl App {
         let w = self.weak();
         window.on_configure_firewall(move || {
             if let Some(app) = w.upgrade() {
-                app.configure_firewall();
+                let public = app.public_network();
+                app.configure_firewall(public);
             }
         });
         let w = self.weak();
@@ -1364,7 +1412,8 @@ impl App {
         let w = self.weak();
         window.on_configure_firewall(move || {
             if let Some(app) = w.upgrade() {
-                app.configure_firewall();
+                let public = app.public_network();
+                app.configure_firewall(public);
             }
         });
         let w = self.weak();

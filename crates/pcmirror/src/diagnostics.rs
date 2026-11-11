@@ -10,15 +10,16 @@ use crate::receiver;
 use std::path::Path;
 use windows::core::{Interface, BSTR, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_CANCELLED, HANDLE, S_OK, VARIANT_TRUE, WAIT_OBJECT_0,
+    CloseHandle, GetLastError, ERROR_CANCELLED, HANDLE, S_OK, VARIANT_FALSE, VARIANT_TRUE,
+    WAIT_OBJECT_0,
 };
 use windows::Win32::NetworkManagement::WindowsFirewall::{
-    INetFwPolicy2, INetFwRule, NetFwPolicy2, NetFwRule, NET_FW_ACTION_ALLOW,
-    NET_FW_PROFILE2_PRIVATE, NET_FW_RULE_DIR_IN,
+    INetFwPolicy2, INetFwRule, NetFwPolicy2, NetFwRule, NET_FW_ACTION_ALLOW, NET_FW_ACTION_BLOCK,
+    NET_FW_PROFILE2_DOMAIN, NET_FW_PROFILE2_PRIVATE, NET_FW_PROFILE2_PUBLIC, NET_FW_RULE_DIR_IN,
 };
 use windows::Win32::Networking::NetworkListManager::{
     INetworkListManager, NetworkListManager, NLM_ENUM_NETWORK_CONNECTED,
-    NLM_NETWORK_CATEGORY_PRIVATE,
+    NLM_NETWORK_CATEGORY_PRIVATE, NLM_NETWORK_CATEGORY_PUBLIC,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL,
@@ -32,6 +33,8 @@ use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 /// Befehlszeilenschalter, mit dem sich PC-Mirror selbst erhöht für die Regeln startet.
 pub const CONFIGURE_ARG: &str = "--configure-firewall";
+/// Zusatz: verbundene öffentliche Netzwerke als privat einstufen.
+pub const PRIVATE_ARG: &str = "--make-private";
 
 const RULE_PREFIX: &str = "PC-Mirror";
 const PROTOCOL_TCP: i32 = 6;
@@ -65,9 +68,10 @@ fn same_path(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase()
 }
 
-/// Unsere Regeln für genau diese uxplay.exe (auch die von älteren Versionen angelegten).
-/// Die Regelsammlung bleibt dabei bestehen: Die Regelobjekte gehören zu ihr.
-unsafe fn own_rules(
+/// Alle Regeln, deren Programm genau diese uxplay.exe ist (beliebiger Name; auch
+/// Regeln aus dem Windows-Dialog „Zugriff zulassen“). Die Regelsammlung bleibt
+/// während der Auswertung bestehen.
+unsafe fn program_rules(
     policy: &INetFwPolicy2,
     program: &str,
 ) -> windows::core::Result<Vec<INetFwRule>> {
@@ -89,10 +93,6 @@ unsafe fn own_rules(
         };
         let _ = VariantClear(item);
         let Some(rule) = rule else { continue };
-        let name = rule.Name().map(|n| n.to_string()).unwrap_or_default();
-        if !name.starts_with(RULE_PREFIX) {
-            continue;
-        }
         let app = rule.ApplicationName().map(|n| n.to_string()).unwrap_or_default();
         if same_path(&app, program) {
             rules.push(rule);
@@ -102,42 +102,108 @@ unsafe fn own_rules(
     Ok(rules)
 }
 
-fn private_network() -> Option<bool> {
-    unsafe {
-        let manager: INetworkListManager =
-            CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL).ok()?;
-        let networks = manager.GetNetworks(NLM_ENUM_NETWORK_CONNECTED).ok()?;
-        let mut private = false;
-        loop {
-            let mut item = [None];
-            let mut fetched = 0u32;
-            if networks.Next(&mut item, Some(&mut fetched)).is_err() || fetched == 0 {
-                break;
-            }
-            if let Some(network) = item[0].take() {
-                if network.GetCategory().ok() == Some(NLM_NETWORK_CATEGORY_PRIVATE) {
-                    private = true;
-                }
-            }
-        }
-        Some(private)
-    }
+/// Nur die von PC-Mirror selbst angelegten Regeln.
+unsafe fn own_rules(
+    policy: &INetFwPolicy2,
+    program: &str,
+) -> windows::core::Result<Vec<INetFwRule>> {
+    Ok(program_rules(policy, program)?
+        .into_iter()
+        .filter(|rule| {
+            rule.Name()
+                .map(|n| n.to_string().starts_with(RULE_PREFIX))
+                .unwrap_or(false)
+        })
+        .collect())
 }
 
-fn rules_present(program: &str) -> Result<bool, String> {
-    unsafe {
-        let policy: INetFwPolicy2 = CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER)
-            .map_err(|e| e.to_string())?;
-        let rules = own_rules(&policy, program).map_err(|e| e.to_string())?;
-        let active = rules
-            .iter()
-            .filter(|rule| {
-                rule.Enabled().ok() == Some(VARIANT_TRUE)
-                    && rule.Action().ok() == Some(NET_FW_ACTION_ALLOW)
-            })
-            .count();
-        Ok(active >= RULES.len())
+/// Eine eingehende, aktive Regel für das Programm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuleInfo {
+    pub allow: bool,
+    pub profiles: i32,
+}
+
+/// Ein gerade aktives Firewall-Profil (Domäne, Privat oder Öffentlich).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProfileInfo {
+    pub profile: i32,
+    pub firewall_on: bool,
+    pub block_all: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Eingehende Verbindungen zum Empfänger sind in allen aktiven Profilen erlaubt.
+    Open,
+    /// Eine Block-Regel oder „Alle eingehenden blockieren“ verhindert Verbindungen.
+    Blocked,
+    /// Keine passende Erlauben-Regel für ein aktives Profil.
+    Missing,
+}
+
+/// Bewertet wie Windows: Ist die Firewall im Profil aus, ist alles offen; „Alle
+/// blockieren“ und Block-Regeln gehen vor; sonst braucht es eine Erlauben-Regel.
+pub fn evaluate(profiles: &[ProfileInfo], rules: &[RuleInfo]) -> Verdict {
+    let mut verdict = Verdict::Open;
+    for profile in profiles.iter().filter(|p| p.firewall_on) {
+        let applies = |rule: &&RuleInfo| rule.profiles & profile.profile != 0;
+        if profile.block_all || rules.iter().filter(applies).any(|r| !r.allow) {
+            return Verdict::Blocked;
+        }
+        if !rules.iter().filter(applies).any(|r| r.allow) {
+            verdict = Verdict::Missing;
+        }
     }
+    verdict
+}
+
+/// Liest aktive Profile und die Regeln des Empfängers aus der Windows-Firewall.
+unsafe fn read_firewall(program: &str) -> windows::core::Result<(Vec<ProfileInfo>, Vec<RuleInfo>)> {
+    let policy: INetFwPolicy2 = CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER)?;
+    let current = policy.CurrentProfileTypes()?;
+    let mut profiles = Vec::new();
+    for profile in [NET_FW_PROFILE2_DOMAIN, NET_FW_PROFILE2_PRIVATE, NET_FW_PROFILE2_PUBLIC] {
+        if current & profile.0 == 0 {
+            continue;
+        }
+        profiles.push(ProfileInfo {
+            profile: profile.0,
+            firewall_on: policy.get_FirewallEnabled(profile)? == VARIANT_TRUE,
+            block_all: policy.get_BlockAllInboundTraffic(profile).ok() == Some(VARIANT_TRUE),
+        });
+    }
+    let rules = program_rules(&policy, program)?
+        .into_iter()
+        .filter(|rule| {
+            rule.Enabled().ok() == Some(VARIANT_TRUE)
+                && rule.Direction().ok() == Some(NET_FW_RULE_DIR_IN)
+        })
+        .map(|rule| RuleInfo {
+            allow: rule.Action().ok() == Some(NET_FW_ACTION_ALLOW),
+            profiles: rule.Profiles().unwrap_or(0),
+        })
+        .collect();
+    Ok((profiles, rules))
+}
+
+/// Netzwerkkategorie der verbundenen Netze auf „Privat“ setzen (nur im erhöhten Helfer).
+unsafe fn make_networks_private() -> windows::core::Result<()> {
+    let manager: INetworkListManager = CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL)?;
+    let networks = manager.GetNetworks(NLM_ENUM_NETWORK_CONNECTED)?;
+    loop {
+        let mut item = [None];
+        let mut fetched = 0u32;
+        if networks.Next(&mut item, Some(&mut fetched)).is_err() || fetched == 0 {
+            break;
+        }
+        if let Some(network) = item[0].take() {
+            if network.GetCategory()? == NLM_NETWORK_CATEGORY_PUBLIC {
+                network.SetCategory(NLM_NETWORK_CATEGORY_PRIVATE)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn network_summary() -> String {
@@ -166,7 +232,7 @@ pub fn adapter_summary() -> String {
         .join("\n")
 }
 
-/// Prüft ohne Administratorrechte, ob die Regeln und ein privates Profil vorhanden sind.
+/// Prüft ohne Administratorrechte, ob iPhone/iPad den Empfänger erreichen dürfen.
 pub fn check_firewall() {
     let program = receiver::executable().display().to_string();
     std::thread::spawn(move || {
@@ -180,14 +246,39 @@ pub fn check_firewall() {
             });
             return;
         };
-        let private = private_network();
-        let (rules, details) = match rules_present(&program) {
-            Ok(present) => (Some(present), String::new()),
-            Err(error) => (None, error),
+        let (private, rules, message, details) = match unsafe { read_firewall(&program) } {
+            Ok((profiles, rules)) => {
+                let private = Some(
+                    profiles
+                        .iter()
+                        .any(|p| p.profile & (NET_FW_PROFILE2_PRIVATE.0 | NET_FW_PROFILE2_DOMAIN.0) != 0),
+                );
+                let verdict = evaluate(&profiles, &rules);
+                let open = verdict == Verdict::Open;
+                let message = match verdict {
+                    Verdict::Blocked => BLOCKED_MESSAGE,
+                    _ => firewall_message(private, Some(open)).1,
+                };
+                let details = format!(
+                    "Profile: {}; Regeln für den Empfänger: {} erlauben, {} blockieren",
+                    profiles
+                        .iter()
+                        .map(|p| format!(
+                            "{}{}",
+                            profile_name(p.profile),
+                            if p.firewall_on { "" } else { " (Firewall aus)" }
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    rules.iter().filter(|r| r.allow).count(),
+                    rules.iter().filter(|r| !r.allow).count(),
+                );
+                (private, Some(open), message, details)
+            }
+            Err(error) => (None, None, firewall_message(None, None).1, error.to_string()),
         };
-        let (ok, message) = firewall_message(private, rules);
         events::post(Event::FirewallChecked {
-            ok,
+            ok: rules == Some(true),
             private,
             rules,
             message,
@@ -196,18 +287,29 @@ pub fn check_firewall() {
     });
 }
 
-/// Wichtigster Hinweis zuerst: fehlende Freigabe, dann öffentliches Netzwerk.
+const BLOCKED_MESSAGE: &str = "Die Windows-Firewall blockiert den Empfänger (Block-Regel). Über „Firewall einrichten“ beheben.";
+
+fn profile_name(profile: i32) -> &'static str {
+    match profile {
+        1 => "Domäne",
+        2 => "Privat",
+        _ => "Öffentlich",
+    }
+}
+
+/// `rules`: Empfänger im aktiven Profil erreichbar. `private`: privates oder Domänennetz aktiv.
 pub fn firewall_message(private: Option<bool>, rules: Option<bool>) -> (bool, &'static str) {
     match (private, rules) {
-        (Some(true), Some(true)) => (true, "Firewall-Freigaben vorhanden · privates Netzwerk erkannt"),
-        (_, Some(false)) | (_, None) => (false, "Firewall-Freigabe fehlt oder ist nicht prüfbar. Über „Firewall einrichten“ freigeben. Windows fragt nach Administratorrechten."),
-        (_, Some(true)) => (false, "Kein privates Netzwerk erkannt. Windows-Einstellungen → Netzwerk → Profil Privat wählen, wenn dies dein vertrauenswürdiges Heimnetz ist."),
+        (_, Some(true)) => (true, "Firewall-Freigabe aktiv. iPhone und iPad können verbinden."),
+        (Some(false), Some(false)) => (false, "Dein Netzwerk ist als „Öffentlich“ eingestuft. Über „Netzwerk freigeben“ als privates Heimnetz einstufen."),
+        (_, Some(false)) => (false, "Firewall-Freigabe fehlt. Über „Firewall einrichten“ freigeben. Windows fragt nach Administratorrechten."),
+        (_, None) => (false, "Firewall-Status nicht prüfbar. Falls die Verbindung nicht klappt: „Firewall einrichten“."),
     }
 }
 
 /// Startet PC-Mirror selbst mit Administratorrechten, um die Regeln anzulegen.
 /// Windows zeigt dabei Name und Symbol von PC-Mirror statt einer PowerShell.
-pub fn configure_firewall() {
+pub fn configure_firewall(make_private: bool) {
     let Ok(exe) = std::env::current_exe() else {
         events::post(Event::FirewallConfigured {
             result: Err("Windows konnte die Firewall-Einrichtung nicht starten."),
@@ -216,7 +318,11 @@ pub fn configure_firewall() {
     };
     let file = HSTRING::from(exe.as_os_str());
     let verb = HSTRING::from("runas");
-    let parameters = HSTRING::from(CONFIGURE_ARG);
+    let parameters = HSTRING::from(if make_private {
+        format!("{CONFIGURE_ARG} {PRIVATE_ARG}")
+    } else {
+        CONFIGURE_ARG.to_owned()
+    });
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS,
@@ -251,19 +357,22 @@ pub fn configure_firewall() {
     });
 }
 
-/// Läuft im erhöhten Hilfsprozess (`PC-Mirror.exe --configure-firewall`).
-/// Exit-Code: 0 = in Ordnung, 2 = Firewall-Fehler, 3 = Empfänger fehlt.
-pub fn apply_rules() -> i32 {
+/// Läuft im erhöhten Hilfsprozess (`PC-Mirror.exe --configure-firewall [--make-private]`).
+/// Exit-Code: 0 = in Ordnung, 2 = Firewall-Fehler, 3 = Empfänger fehlt, 4 = Netzwerkprofil.
+pub fn apply_rules(make_private: bool) -> i32 {
     let receiver = receiver::executable();
     if receiver.file_name().and_then(|n| n.to_str()) != Some("uxplay.exe") || !receiver.is_file()
     {
         return 3;
     }
     let Some(_com) = Com::init() else { return 2 };
-    match unsafe { write_rules(&receiver) } {
-        Ok(()) => 0,
-        Err(_) => 2,
+    if unsafe { write_rules(&receiver) }.is_err() {
+        return 2;
     }
+    if make_private && unsafe { make_networks_private() }.is_err() {
+        return 4;
+    }
+    0
 }
 
 /// Vorhandene Regeln werden aktualisiert statt gelöscht, fehlende neu angelegt.
@@ -294,10 +403,20 @@ unsafe fn write_rules(receiver: &Path) -> windows::core::Result<()> {
         rule.SetRemoteAddresses(&BSTR::from("LocalSubnet"))?;
         rule.SetDirection(NET_FW_RULE_DIR_IN)?;
         rule.SetAction(NET_FW_ACTION_ALLOW)?;
-        rule.SetProfiles(NET_FW_PROFILE2_PRIVATE.0)?;
+        rule.SetProfiles(NET_FW_PROFILE2_PRIVATE.0 | NET_FW_PROFILE2_DOMAIN.0)?;
         rule.SetEnabled(VARIANT_TRUE)?;
         if new {
             policy.Rules()?.Add(&rule)?;
+        }
+    }
+    // Block-Regeln für den Empfänger (z. B. „Abbrechen“ im Windows-Dialog) gehen jeder
+    // Freigabe vor. Sie werden deaktiviert, nicht gelöscht.
+    for rule in program_rules(&policy, &program)? {
+        if rule.Direction().ok() == Some(NET_FW_RULE_DIR_IN)
+            && rule.Action().ok() == Some(NET_FW_ACTION_BLOCK)
+            && rule.Enabled().ok() == Some(VARIANT_TRUE)
+        {
+            rule.SetEnabled(VARIANT_FALSE)?;
         }
     }
     Ok(())
@@ -307,12 +426,44 @@ unsafe fn write_rules(receiver: &Path) -> windows::core::Result<()> {
 mod tests {
     use super::*;
 
+    const PRIVATE: i32 = 2;
+    const PUBLIC: i32 = 4;
+    const ALL: i32 = 0x7fff_ffff;
+
+    fn on(profile: i32) -> ProfileInfo {
+        ProfileInfo { profile, firewall_on: true, block_all: false }
+    }
+
+    #[test]
+    fn verdict_follows_windows_rules() {
+        let allow_private = RuleInfo { allow: true, profiles: PRIVATE };
+        let allow_all = RuleInfo { allow: true, profiles: ALL };
+        let block_public = RuleInfo { allow: false, profiles: PUBLIC };
+        // Eigene Regeln im privaten Netz
+        assert_eq!(evaluate(&[on(PRIVATE)], &[allow_private]), Verdict::Open);
+        // Öffentliches Netz, aber Windows-Dialog hat für alle Profile erlaubt: kein Fehlalarm
+        assert_eq!(evaluate(&[on(PUBLIC)], &[allow_private, allow_all]), Verdict::Open);
+        // Nur private Regel im öffentlichen Netz
+        assert_eq!(evaluate(&[on(PUBLIC)], &[allow_private]), Verdict::Missing);
+        // Block-Regel geht vor
+        assert_eq!(evaluate(&[on(PUBLIC)], &[allow_all, block_public]), Verdict::Blocked);
+        // Block-Regel für ein anderes Profil stört nicht
+        assert_eq!(evaluate(&[on(PRIVATE)], &[allow_private, block_public]), Verdict::Open);
+        // Firewall im Profil aus: offen
+        let off = ProfileInfo { profile: PUBLIC, firewall_on: false, block_all: false };
+        assert_eq!(evaluate(&[off], &[]), Verdict::Open);
+        // „Alle eingehenden blockieren“
+        let shields = ProfileInfo { profile: PRIVATE, firewall_on: true, block_all: true };
+        assert_eq!(evaluate(&[shields], &[allow_all]), Verdict::Blocked);
+        // Keine Regeln
+        assert_eq!(evaluate(&[on(PRIVATE)], &[]), Verdict::Missing);
+    }
+
     #[test]
     fn messages_follow_state() {
         assert!(firewall_message(Some(true), Some(true)).0);
-        assert!(firewall_message(Some(false), Some(true))
-            .1
-            .contains("privates Netzwerk"));
+        assert!(firewall_message(Some(false), Some(true)).0);
+        assert!(firewall_message(Some(false), Some(false)).1.contains("Öffentlich"));
         assert!(firewall_message(Some(true), Some(false)).1.contains("fehlt"));
         assert!(!firewall_message(None, None).0);
     }
@@ -323,17 +474,19 @@ mod tests {
         assert!(!same_path(r"C:\a\uxplay.exe", r"C:\b\uxplay.exe"));
     }
 
-    /// Liest die echten Regeln ohne Administratorrechte (prüft die COM-Anbindung).
+    /// Liest die echte Firewall ohne Administratorrechte (prüft die COM-Anbindung).
     #[test]
     fn reads_firewall_without_admin() {
         let _com = Com::init().expect("COM");
-        assert_eq!(rules_present(r"C:\nicht\vorhanden\uxplay.exe"), Ok(false));
-        assert!(private_network().is_some());
-        // Auf einem PC mit installiertem PC-Mirror: dessen Regeln werden erkannt.
+        let (profiles, rules) =
+            unsafe { read_firewall(r"C:\nicht\vorhanden\uxplay.exe") }.expect("Firewall lesbar");
+        assert!(!profiles.is_empty());
+        assert!(rules.is_empty());
         if let Ok(base) = std::env::var("LOCALAPPDATA") {
             let installed = format!(r"{base}\PCMirror\current\uxplay.exe");
             if Path::new(&installed).is_file() {
-                eprintln!("installiert: {installed} -> {:?}", rules_present(&installed));
+                let (profiles, rules) = unsafe { read_firewall(&installed) }.unwrap();
+                eprintln!("installiert: {:?} {:?} -> {:?}", profiles, rules, evaluate(&profiles, &rules));
             }
         }
     }

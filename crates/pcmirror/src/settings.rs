@@ -256,6 +256,19 @@ pub fn set_onboarding_done() {
     let _ = ini.write(&path);
 }
 
+/// Hat schon einmal eine Verbindung geklappt? Dann zeigt PC-Mirror keine
+/// Firewall-Warnung mehr als Hinweis oben (nur noch in den Einstellungen).
+pub fn connection_verified() -> bool {
+    Ini::read(&ini_path()).bool("ui", "connectionVerified", false)
+}
+
+pub fn set_connection_verified() {
+    let path = ini_path();
+    let mut ini = Ini::read(&path);
+    ini.set("ui", "connectionVerified", "true");
+    let _ = ini.write(&path);
+}
+
 fn bool_text(value: bool) -> &'static str {
     if value {
         "true"
