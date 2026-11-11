@@ -1,3 +1,22 @@
+# Rust-Empfänger (0.4.0)
+
+Datum: 11.11.2026. Entwicklungsrechner: Windows x64, Ethernet, privates Netzwerkprofil. **Ohne echtes iPhone** – die Abnahme am Gerät steht noch aus.
+
+| Prüfung | Ergebnis | Nachweis |
+|---|---|---|
+| FairPlay-Entschlüsselung (playfair) gegen C-Fassung | BESTANDEN | 100 Zufallsfälle, alle vier Modi, Byte für Byte gleich (`tests/fairplay_vectors.c`) |
+| SRP-6a (PIN-Kopplung) gegen C-Fassung | BESTANDEN | B, M, H_AMK und Sitzungsschlüssel identisch (`tests/srp_vectors.c`) |
+| AES-GCM mit 16-Byte-IV gegen OpenSSL | BESTANDEN | `tests/gcm_vectors.c` |
+| Vorhandene `receiver.pem` (OpenSSL) lesbar | BESTANDEN | Geräteidentität bleibt beim Wechsel gleich |
+| /info-Antwort gegenüber C-Fassung | IDENTISCH | gleicher Schlüssel, XML-Vergleich |
+| mDNS-Ankündigung gegenüber C-Fassung | IDENTISCH | mit und ohne PIN (`tests/mdns_txt.py`) |
+| Ende-zu-Ende mit nachgebautem Sender | BESTANDEN | Pair-Verify, FairPlay (Modi 0–3), SETUP, verschlüsseltes H.264 und H.265 → Bild 320×240, AAC-ELD-Ton ohne Decoderfehler, TEARDOWN → IDLE; derselbe Test läuft auch gegen die C-Fassung (`tests/airplay_e2e.py`) |
+| PIN-Kopplung Ende-zu-Ende | BESTANDEN | pair-pin-start → PIN-Anzeige, pair-setup-pin (3 Schritte), danach Bild |
+| Video im eingebetteten Fenster (d3d11videosink) | BESTANDEN | Bildschirmfoto des Elternfensters zeigt das entschlüsselte Bild |
+| Kaputte Eingaben aus dem Netz | BESTANDEN | 600 zufällige/fehlerhafte RTSP-, Pairing-, FairPlay-, SETUP- und mDNS-Eingaben; Empfänger läuft weiter (`tests/receiver_fuzz.py`) |
+| Steuerkanal, Screenshot, STOP, Pipe-Ende | BESTANDEN | `tests/backend_integration.py` mit dem Rust-Empfänger |
+| Echtes iPhone/iPad | OFFEN | Abnahme durch den Benutzer; Ausweichlösung „Klassischer Empfänger“ in den Einstellungen |
+
 # Tatsächlich ausgeführte Prüfungen
 
 Datum: 24.10.2026. Entwicklungsrechner: Windows x64, Ethernet, privates Netzwerkprofil.
