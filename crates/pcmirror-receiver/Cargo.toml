@@ -1,0 +1,15 @@
+[package]
+name = "pcmirror-receiver"
+description = "PC-Mirror AirPlay-Empfänger in Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "pcmirror-receiver"
+path = "src/main.rs"
+
+[dependencies]

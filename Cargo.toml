@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pcmirror", "crates/pcmirror-sign"]
+members = ["crates/pcmirror", "crates/pcmirror-sign", "crates/pcmirror-receiver"]
 
 [workspace.package]
 version = "0.3.5"
