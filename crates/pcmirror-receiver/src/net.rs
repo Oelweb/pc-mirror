@@ -160,8 +160,19 @@ pub fn hardware_address() -> [u8; 6] {
         })
 }
 
+/// DNS-Hostname wie `gethostname()` (Schreibweise wie in Windows eingestellt).
 pub fn host_name() -> String {
-    let raw = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "UxPlay".into());
+    use windows::Win32::System::SystemInformation::{ComputerNamePhysicalDnsHostname, GetComputerNameExW};
+    let raw = unsafe {
+        let mut size = 0u32;
+        let _ = GetComputerNameExW(ComputerNamePhysicalDnsHostname, None, &mut size);
+        let mut buffer = vec![0u16; size as usize + 1];
+        if GetComputerNameExW(ComputerNamePhysicalDnsHostname, Some(windows::core::PWSTR(buffer.as_mut_ptr())), &mut size).is_ok() {
+            String::from_utf16_lossy(&buffer[..size as usize])
+        } else {
+            std::env::var("COMPUTERNAME").unwrap_or_else(|_| "UxPlay".into())
+        }
+    };
     let label: String = raw
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })

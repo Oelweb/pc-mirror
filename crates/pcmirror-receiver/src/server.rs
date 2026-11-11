@@ -56,9 +56,12 @@ impl Shared {
         }
     }
 
+    /// Bit 27 („legacy pairing“) nur mit PIN, wie UxPlay: ohne PIN verbindet sich
+    /// das Gerät ohne Pair-Setup und damit ohne Verzögerung.
     pub fn features(&self) -> u64 {
         let high = if self.config.h265 { FEATURE_H265 } else { 0 };
-        (u64::from(high) << 32) | u64::from(FEATURES_LOW)
+        let low = if self.pin_mode() { FEATURES_LOW } else { FEATURES_LOW & !(1 << 27) };
+        (u64::from(high) << 32) | u64::from(low)
     }
 
     pub fn features_text(&self) -> String {
