@@ -13,3 +13,15 @@ name = "pcmirror-receiver"
 path = "src/main.rs"
 
 [dependencies]
+aes = "0.8"
+aes-gcm = "0.10"
+cbc = "0.1"
+ctr = "0.9"
+sha1 = "0.10"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8", "pem"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+num-bigint = "0.4"
+plist = "1"
+base64.workspace = true
