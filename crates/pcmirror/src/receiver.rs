@@ -72,6 +72,19 @@ pub fn executable() -> PathBuf {
     }
 }
 
+/// Läuft gerade der klassische Empfänger?
+pub fn classic_active() -> bool {
+    executable().file_name().is_some_and(|n| n == CLASSIC_RECEIVER)
+}
+
+/// Ist der klassische Empfänger als Ausweichlösung vorhanden?
+pub fn classic_available() -> bool {
+    exe_dir().join(CLASSIC_RECEIVER).is_file()
+}
+
+/// Zeile des Rust-Empfängers, nach der ein erstes Bild kommen muss.
+pub const MIRROR_REQUEST: &str = "Bildschirmsynchronisierung angefordert";
+
 /// Alle mitgelieferten Empfänger (für die Firewall-Freigaben).
 pub fn all_executables() -> Vec<PathBuf> {
     [RUST_RECEIVER, CLASSIC_RECEIVER]

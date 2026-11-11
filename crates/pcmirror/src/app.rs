@@ -85,6 +85,9 @@ struct State {
     snapshot: Option<Snapshot>,
     converting: bool,
     relaunch_at: Option<Instant>,
+    /// Frist für das erste Bild nach einer Spiegelungsanfrage (Rust-Empfänger).
+    first_frame_deadline: Option<Instant>,
+    fallback_used: bool,
     main_hwnd: Option<RawHwnd>,
     toolbar_hwnd: Option<RawHwnd>,
     toolbar_shown: bool,
@@ -111,6 +114,9 @@ pub struct App {
     preview: bool,
     draining: Cell<bool>,
 }
+
+/// So lange darf das erste Bild nach einer Spiegelungsanfrage dauern.
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub fn run(settings: Settings, synthetic: bool, preview: bool) -> Result<(), slint::PlatformError> {
     receiver::set_classic(settings.classic_receiver);
@@ -142,6 +148,8 @@ pub fn run(settings: Settings, synthetic: bool, preview: bool) -> Result<(), sli
         snapshot: None,
         converting: false,
         relaunch_at: None,
+        first_frame_deadline: None,
+        fallback_used: false,
         main_hwnd: None,
         toolbar_hwnd: None,
         toolbar_shown: false,
@@ -531,6 +539,7 @@ impl App {
             match notice {
                 Notice::Ready => self.set_status("Bereit", WAITING),
                 Notice::Frame(width, height) => {
+                    self.state.borrow_mut().first_frame_deadline = None;
                     let first = !self.state.borrow().streaming;
                     self.set_streaming(true);
                     self.state.borrow_mut().pin = None;
@@ -555,8 +564,21 @@ impl App {
                     self.set_status("PIN am Gerät eingeben", WAITING);
                 }
                 Notice::Snapshot(ok) => self.finish_screenshot(ok),
-                Notice::Log(line) => logging::line(&line),
-                Notice::Error { message, details } => self.show_error(message, &details),
+                Notice::Log(line) => {
+                    if line.contains(receiver::MIRROR_REQUEST) && !receiver::classic_active() {
+                        let mut state = self.state.borrow_mut();
+                        if !state.streaming {
+                            state.first_frame_deadline = Some(Instant::now() + FIRST_FRAME_TIMEOUT);
+                        }
+                    }
+                    logging::line(&line);
+                }
+                Notice::Error { message, details } => {
+                    if message.starts_with("Der Empfänger wurde unerwartet beendet") && self.fall_back_to_classic(&details) {
+                        continue;
+                    }
+                    self.show_error(message, &details);
+                }
                 Notice::Stopped => {
                     self.set_streaming(false);
                     let (preparing, restarting, closing) = {
@@ -672,6 +694,14 @@ impl App {
                     .is_some_and(|(_, until)| until.is_some_and(|t| now > t)),
             )
         };
+        let first_frame_missed = {
+            let state = self.state.borrow();
+            !state.streaming && state.first_frame_deadline.is_some_and(|t| now > t)
+        };
+        if first_frame_missed {
+            self.state.borrow_mut().first_frame_deadline = None;
+            self.fall_back_to_classic("Kein Bild nach der Spiegelungsanfrage");
+        }
         if relaunch {
             self.state.borrow_mut().relaunch_at = None;
             self.launch();
@@ -836,6 +866,34 @@ impl App {
         self.handle_notices(notices);
         self.save_preferences();
         self.render();
+    }
+
+    /// Automatischer Rückfall: Liefert der Rust-Empfänger kein Bild oder stürzt ab,
+    /// übernimmt einmalig der klassische Empfänger (Einstellung wird gespeichert und
+    /// lässt sich in den Einstellungen wieder abschalten).
+    fn fall_back_to_classic(self: &Rc<Self>, reason: &str) -> bool {
+        if self.synthetic || self.preview || receiver::classic_active() || !receiver::classic_available() {
+            return false;
+        }
+        {
+            let mut state = self.state.borrow_mut();
+            if state.fallback_used || state.closing || state.preparing_update {
+                return false;
+            }
+            state.fallback_used = true;
+            state.settings.classic_receiver = true;
+            state.notice = Some((
+                Text::new("Klassischer Empfänger wird verwendet"),
+                Some(Instant::now() + Duration::from_secs(6)),
+            ));
+        }
+        logging::line(&format!(
+            "Rust-Empfänger: {reason}. Wechsel auf den klassischen Empfänger (in den Einstellungen abschaltbar)."
+        ));
+        receiver::set_classic(true);
+        self.save_preferences();
+        self.restart();
+        true
     }
 
     fn save_preferences(self: &Rc<Self>) {

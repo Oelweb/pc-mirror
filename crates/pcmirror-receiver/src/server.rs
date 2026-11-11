@@ -525,6 +525,8 @@ impl Connection {
                         self.mirror = None;
                         match MirrorStream::start(shared.config.mirror_port(), self.remote, key, id, shared.media.clone(), || {}) {
                             Ok((mirror, port)) => {
+                                // Die App erwartet danach ein erstes Bild (sonst Rückfall).
+                                control::log("Bildschirmsynchronisierung angefordert");
                                 self.mirror = Some(mirror);
                                 let mut s = Dictionary::new();
                                 s.insert("dataPort".into(), Value::Integer(u64::from(port).into()));

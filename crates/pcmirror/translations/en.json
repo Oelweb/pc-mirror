@@ -133,5 +133,6 @@
   "Die Windows-Firewall blockiert den Empfänger (Block-Regel). Über „Firewall einrichten“ beheben.": "Windows Firewall is blocking the receiver (block rule). Use “Configure firewall” to fix it.",
   "Klassischer Empfänger": "Classic receiver",
   "Alter UxPlay-Empfänger statt des neuen Rust-Empfängers. Nur einschalten, wenn die Verbindung sonst nicht klappt.": "Old UxPlay receiver instead of the new Rust receiver. Only turn on if connecting does not work otherwise.",
-  "mDNS: im Empfänger integriert · Bonjour ist nicht erforderlich\nAirPlay: TCP/UDP 48000–48002 · Discovery: UDP 5353\nFirewall-Freigaben gelten nur im privaten lokalen Netz.": "mDNS: built into the receiver · Bonjour is not required\nAirPlay: TCP/UDP 48000–48002 · Discovery: UDP 5353\nFirewall rules apply only to the private local network."
+  "mDNS: im Empfänger integriert · Bonjour ist nicht erforderlich\nAirPlay: TCP/UDP 48000–48002 · Discovery: UDP 5353\nFirewall-Freigaben gelten nur im privaten lokalen Netz.": "mDNS: built into the receiver · Bonjour is not required\nAirPlay: TCP/UDP 48000–48002 · Discovery: UDP 5353\nFirewall rules apply only to the private local network.",
+  "Klassischer Empfänger wird verwendet": "Using the classic receiver"
 }

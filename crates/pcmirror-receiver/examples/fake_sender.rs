@@ -292,6 +292,13 @@ fn main() {
         })
     });
 
+    // Testfall „kein Bild“: Spiegelung anfordern, aber nichts senden (prüft den Rückfall der App)
+    if std::env::var_os("FAKE_SENDER_NO_VIDEO").is_some() {
+        println!("PASS Spiegelung angefordert, sende absichtlich kein Bild");
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        return;
+    }
+
     // 7. Video senden
     let mut video = TcpStream::connect((host.as_str(), data_port)).expect("Videoport");
     let (key, iv) = stream_keys(&aes_key, stream_id);

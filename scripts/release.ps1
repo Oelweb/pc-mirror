@@ -45,6 +45,10 @@ try {
         python "$projectRoot\tests\airplay_e2e.py" --package $package @case
         if ($LASTEXITCODE -ne 0) { throw "Ende-zu-Ende-Test fehlgeschlagen: $case" }
     }
+    python "$projectRoot\tests\receiver_fuzz.py" --package $package
+    if ($LASTEXITCODE -ne 0) { throw 'Robustheitstest fehlgeschlagen' }
+    python "$projectRoot\tests\fallback_test.py" --package $package
+    if ($LASTEXITCODE -ne 0) { throw 'Rückfalltest fehlgeschlagen' }
     python "$projectRoot\tests\verify_package.py" --package $package
     if ($LASTEXITCODE -ne 0) { throw 'Paketprüfung fehlgeschlagen' }
 
