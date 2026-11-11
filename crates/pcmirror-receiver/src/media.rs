@@ -18,6 +18,7 @@ struct Inner {
     volume: f64,
     muted: bool,
     video_paused: bool,
+    audio_frames: u64,
 }
 
 const H264_CAPS: &str = "video/x-h264,stream-format=(string)byte-stream,alignment=(string)au";
@@ -118,22 +119,33 @@ impl Media {
         }
         pipeline.set_state(GST_STATE_PLAYING);
         inner.audio = Some((ct, pipeline));
+        inner.audio_frames = 0;
         Ok(())
     }
 
     /// Prüft das erste Byte wie die C-Fassung, damit kaputte Frames nicht in den Decoder gehen.
     pub fn push_audio(&self, frame: &[u8]) {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
+        inner.audio_frames += 1;
+        let first_frame = inner.audio_frames == 1;
         let Some((ct, pipeline)) = &inner.audio else { return };
-        let Some(&first) = frame.first() else { return };
+        let Some(&lead) = frame.first() else { return };
         let valid = match ct {
-            8 => matches!(first, 0x8c | 0x8d | 0x8e | 0x80 | 0x81 | 0x82),
-            2 => first == 0x20,
-            4 => first == 0xff,
+            8 => matches!(lead, 0x8c | 0x8d | 0x8e | 0x80 | 0x81 | 0x82),
+            2 => lead == 0x20,
+            4 => lead == 0xff,
             _ => true,
         };
         if valid {
             pipeline.push(frame);
+            if first_frame {
+                control::log(&format!("Ton läuft ({})", match ct { 8 => "AAC-ELD", 4 => "AAC", 2 => "ALAC", _ => "PCM" }));
+            }
+        } else if first_frame {
+            control::log(&format!("Ton: ungültiger Frame verworfen (erstes Byte {lead:#04x})"));
+        }
+        if let Some(error) = pipeline.poll_error() {
+            control::log(&format!("Tonfehler: {error}"));
         }
     }
 

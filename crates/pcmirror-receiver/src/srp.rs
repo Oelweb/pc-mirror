@@ -149,6 +149,29 @@ impl Server {
     }
 }
 
+/// Clientseite (wie ein iPhone) für Test- und Diagnosewerkzeuge:
+/// gibt (A, M, Sitzungsschlüssel K) zurück.
+pub fn client_proof(username: &str, password: &str, salt: &[u8], public_b: &[u8], private_a: &[u8]) -> (Vec<u8>, [u8; 20], [u8; SESSION_KEY_SIZE]) {
+    let n = n();
+    let a = BigUint::from_bytes_be(private_a);
+    let big_a = g().modpow(&a, &n);
+    let b = BigUint::from_bytes_be(public_b);
+    let u = h_nn(&big_a, &b);
+    let k = h_nn(&n, &g());
+    let x = calculate_x(salt, username, password.as_bytes());
+    let gx = g().modpow(&x, &n);
+    let base = (&b + &n * &k - (&k * &gx) % &n) % &n;
+    let s = base.modpow(&(&a + &u * &x), &n);
+    let key = session_key(&s);
+    let m = calculate_m(username, &BigUint::from_bytes_be(salt), &big_a, &b, &key);
+    (bytes(&big_a), m, key)
+}
+
+/// Erwarteter Server-Beweis H(A | M | K) zur Prüfung auf Clientseite.
+pub fn expected_server_proof(public_a: &[u8], m: &[u8; 20], key: &[u8; SESSION_KEY_SIZE]) -> [u8; 20] {
+    sha1(&[&bytes(&BigUint::from_bytes_be(public_a)), m, key])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

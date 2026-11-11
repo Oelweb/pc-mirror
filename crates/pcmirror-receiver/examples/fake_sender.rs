@@ -106,10 +106,52 @@ fn main() {
     plist::to_writer_xml(&mut xml, &info).unwrap();
     println!("INFO-BEGIN\n{}\nINFO-END", String::from_utf8_lossy(&xml));
 
-    // 2. Pair-Setup
+    // 2. Pair-Setup (mit PIN: SRP-Kopplung wie beim iPhone)
     let client_ed = SigningKey::from_bytes(&random_bytes::<32>());
-    let (code, _, server_ed) = rtsp.request("POST", "/pair-setup", Some("application/octet-stream"), &client_ed.verifying_key().to_bytes());
-    assert_eq!((code, server_ed.len()), (200, 32), "pair-setup");
+    let pin = args.get(5).and_then(|a| a.strip_prefix("pin=")).map(str::to_owned);
+    let server_ed: Vec<u8> = if let Some(pin) = pin {
+        let user = "AA:BB:CC:DD:EE:FF";
+        let (code, _, _) = rtsp.request("POST", "/pair-pin-start", None, &[]);
+        assert_eq!(code, 200, "pair-pin-start");
+        let mut d = Dictionary::new();
+        d.insert("method".into(), Value::String("pin".into()));
+        d.insert("user".into(), Value::String(user.into()));
+        let (code, _, body) = rtsp.request("POST", "/pair-setup-pin", Some("application/x-apple-binary-plist"), &plist_bytes(d));
+        assert_eq!(code, 200, "pair-setup-pin 1");
+        let reply: Dictionary = plist::from_bytes(&body).unwrap();
+        let salt = reply.get("salt").and_then(Value::as_data).unwrap().to_vec();
+        let public_b = reply.get("pk").and_then(Value::as_data).unwrap().to_vec();
+        let a = random_bytes::<32>();
+        let (public_a, m, key) = pcmirror_receiver::srp::client_proof(user, &pin, &salt, &public_b, &a);
+        let mut d = Dictionary::new();
+        d.insert("pk".into(), Value::Data(public_a.clone()));
+        d.insert("proof".into(), Value::Data(m.to_vec()));
+        let (code, _, body) = rtsp.request("POST", "/pair-setup-pin", Some("application/x-apple-binary-plist"), &plist_bytes(d));
+        assert_eq!(code, 200, "pair-setup-pin 2 (PIN abgelehnt?)");
+        let reply: Dictionary = plist::from_bytes(&body).unwrap();
+        let proof = reply.get("proof").and_then(Value::as_data).unwrap();
+        assert_eq!(proof, pcmirror_receiver::srp::expected_server_proof(&public_a, &m, &key), "Server-Beweis");
+        let aes_key = derive16(b"Pair-Setup-AES-Key", &key);
+        let mut aes_iv = derive16(b"Pair-Setup-AES-IV", &key);
+        aes_iv[15] = aes_iv[15].wrapping_add(1);
+        let (epk, tag) = pcmirror_receiver::crypto::gcm_encrypt(&aes_key, &aes_iv, &client_ed.verifying_key().to_bytes());
+        let mut d = Dictionary::new();
+        d.insert("epk".into(), Value::Data(epk));
+        d.insert("authTag".into(), Value::Data(tag.to_vec()));
+        let (code, _, body) = rtsp.request("POST", "/pair-setup-pin", Some("application/x-apple-binary-plist"), &plist_bytes(d));
+        assert_eq!(code, 200, "pair-setup-pin 3");
+        let reply: Dictionary = plist::from_bytes(&body).unwrap();
+        aes_iv[15] = aes_iv[15].wrapping_add(1);
+        let server_epk = reply.get("epk").and_then(Value::as_data).unwrap();
+        let server_tag: [u8; 16] = reply.get("authTag").and_then(Value::as_data).unwrap().try_into().unwrap();
+        let server_pk = pcmirror_receiver::crypto::gcm_decrypt(&aes_key, &aes_iv, server_epk, &server_tag).expect("Server-Schlüssel");
+        println!("PASS PIN-Kopplung");
+        server_pk
+    } else {
+        let (code, _, server_ed) = rtsp.request("POST", "/pair-setup", Some("application/octet-stream"), &client_ed.verifying_key().to_bytes());
+        assert_eq!((code, server_ed.len()), (200, 32), "pair-setup");
+        server_ed
+    };
 
     // 3. Pair-Verify
     let client_x = StaticSecret::random_from_rng(rand_core::OsRng);
@@ -189,9 +231,66 @@ fn main() {
     let reply: Dictionary = plist::from_bytes(&body).unwrap();
     let streams = reply.get("streams").and_then(Value::as_array).expect("streams");
     let data_port = streams[0].as_dictionary().unwrap().get("dataPort").unwrap().as_unsigned_integer().unwrap() as u16;
+    // Ton (AAC-ELD wie bei der Bildschirmsynchronisierung), falls Clip vorhanden
+    let eld = std::fs::read(std::path::Path::new(&args[3]).with_file_name("clip.eld")).ok();
+    let audio_target = if eld.is_some() {
+        let control = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let mut s = Dictionary::new();
+        s.insert("type".into(), Value::Integer(96u64.into()));
+        s.insert("ct".into(), Value::Integer(8u64.into()));
+        s.insert("spf".into(), Value::Integer(480u64.into()));
+        s.insert("audioFormat".into(), Value::Integer(0x0100_0000u64.into()));
+        s.insert("controlPort".into(), Value::Integer(u64::from(control.local_addr().unwrap().port()).into()));
+        s.insert("usingScreen".into(), Value::Boolean(true));
+        s.insert("isMedia".into(), Value::Boolean(false));
+        let mut d = Dictionary::new();
+        d.insert("streams".into(), Value::Array(vec![Value::Dictionary(s)]));
+        let (code, _, body) = rtsp.request("SETUP", "rtsp://x/1", Some("application/x-apple-binary-plist"), &plist_bytes(d));
+        assert_eq!(code, 200, "SETUP Ton");
+        let reply: Dictionary = plist::from_bytes(&body).unwrap();
+        let stream = reply.get("streams").and_then(Value::as_array).unwrap()[0].as_dictionary().unwrap().clone();
+        let port = stream.get("dataPort").and_then(Value::as_unsigned_integer).unwrap() as u16;
+        println!("PASS SETUP Ton (Port {port})");
+        Some((port, control))
+    } else {
+        None
+    };
     let (code, _, _) = rtsp.request("RECORD", "rtsp://x/1", None, &[]);
     assert_eq!(code, 200, "RECORD");
     println!("PASS SETUP (Videoport {data_port})");
+
+    // Ton in einem eigenen Thread senden: RTP, Nutzdaten AES-CBC (ganze Blöcke)
+    let audio_thread = audio_target.map(|(port, _control)| {
+        let eld = eld.unwrap();
+        let host = host.clone();
+        std::thread::spawn(move || {
+            use aes::cipher::{BlockEncryptMut, KeyIvInit};
+            let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+            let (mut pos, mut seq, mut ts) = (0usize, 1000u16, 0u32);
+            let mut sent = 0;
+            while pos + 2 <= eld.len() {
+                let len = ((eld[pos] as usize) << 8) | eld[pos + 1] as usize;
+                let mut frame = eld[pos + 2..pos + 2 + len].to_vec();
+                pos += 2 + len;
+                let full = frame.len() / 16 * 16;
+                let mut enc = cbc::Encryptor::<aes::Aes128>::new(&aes_key.into(), &eiv.into());
+                for block in frame[..full].chunks_exact_mut(16) {
+                    enc.encrypt_block_mut(block.into());
+                }
+                let mut packet = vec![0x80, if sent == 0 { 0xe0 } else { 0x60 }];
+                packet.extend_from_slice(&seq.to_be_bytes());
+                packet.extend_from_slice(&ts.to_be_bytes());
+                packet.extend_from_slice(&0x1234_5678u32.to_be_bytes());
+                packet.extend_from_slice(&frame);
+                socket.send_to(&packet, (host.as_str(), port)).unwrap();
+                seq = seq.wrapping_add(1);
+                ts = ts.wrapping_add(480);
+                sent += 1;
+                std::thread::sleep(std::time::Duration::from_micros(10_884));
+            }
+            sent
+        })
+    });
 
     // 7. Video senden
     let mut video = TcpStream::connect((host.as_str(), data_port)).expect("Videoport");
@@ -250,6 +349,9 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_millis(33));
     }
     println!("PASS {frames} Bilder gesendet");
+    if let Some(thread) = audio_thread {
+        println!("PASS {} Tonpakete gesendet", thread.join().unwrap());
+    }
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
     // 8. TEARDOWN
