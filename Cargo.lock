@@ -3668,11 +3668,14 @@ dependencies = [
  "cbc",
  "ctr",
  "ed25519-dalek",
+ "libloading",
  "num-bigint",
  "plist",
  "rand_core 0.6.4",
  "sha1 0.10.7",
  "sha2 0.10.9",
+ "socket2",
+ "windows",
  "x25519-dalek",
 ]
 
@@ -4760,6 +4763,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "socket2"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
