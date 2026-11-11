@@ -131,5 +131,7 @@
   "Dein Netzwerk ist als „Öffentlich“ eingestuft. Über „Netzwerk freigeben“ als privates Heimnetz einstufen.": "Your network is classified as “Public”. Use “Allow network” to mark it as a private home network.",
   "Firewall-Freigabe fehlt. Über „Firewall einrichten“ freigeben. Windows fragt nach Administratorrechten.": "Firewall access is missing. Use “Configure firewall” to allow it. Windows will ask for administrator rights.",
   "Firewall-Status nicht prüfbar. Falls die Verbindung nicht klappt: „Firewall einrichten“.": "Firewall status could not be checked. If connecting fails: “Configure firewall”.",
-  "Die Windows-Firewall blockiert den Empfänger (Block-Regel). Über „Firewall einrichten“ beheben.": "Windows Firewall is blocking the receiver (block rule). Use “Configure firewall” to fix it."
+  "Die Windows-Firewall blockiert den Empfänger (Block-Regel). Über „Firewall einrichten“ beheben.": "Windows Firewall is blocking the receiver (block rule). Use “Configure firewall” to fix it.",
+  "Klassischer Empfänger": "Classic receiver",
+  "Alter UxPlay-Empfänger statt des neuen Rust-Empfängers. Nur einschalten, wenn die Verbindung sonst nicht klappt.": "Old UxPlay receiver instead of the new Rust receiver. Only turn on if connecting does not work otherwise."
 }

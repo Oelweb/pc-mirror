@@ -7,7 +7,17 @@ use pcmirror_receiver::{config::Config, gst, receiver, window};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let code = if args.iter().any(|a| a == "--pcmirror-selftest") {
+    let code = if args.iter().any(|a| a == "-v" || a == "--version") {
+        // Version und Ladeprüfung der GStreamer-Bibliotheken (für die Paketprüfung)
+        println!("PC-Mirror AirPlay-Empfänger (Rust) {}", env!("CARGO_PKG_VERSION"));
+        match gst::api() {
+            Ok(_) => 0,
+            Err(error) => {
+                eprintln!("GStreamer: {error}");
+                1
+            }
+        }
+    } else if args.iter().any(|a| a == "--pcmirror-selftest") {
         selftest()
     } else {
         match Config::parse(&args) {

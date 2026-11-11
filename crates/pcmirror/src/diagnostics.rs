@@ -360,14 +360,15 @@ pub fn configure_firewall(make_private: bool) {
 /// Läuft im erhöhten Hilfsprozess (`PC-Mirror.exe --configure-firewall [--make-private]`).
 /// Exit-Code: 0 = in Ordnung, 2 = Firewall-Fehler, 3 = Empfänger fehlt, 4 = Netzwerkprofil.
 pub fn apply_rules(make_private: bool) -> i32 {
-    let receiver = receiver::executable();
-    if receiver.file_name().and_then(|n| n.to_str()) != Some("uxplay.exe") || !receiver.is_file()
-    {
+    let receivers = receiver::all_executables();
+    if receivers.is_empty() {
         return 3;
     }
     let Some(_com) = Com::init() else { return 2 };
-    if unsafe { write_rules(&receiver) }.is_err() {
-        return 2;
+    for receiver in &receivers {
+        if unsafe { write_rules(receiver) }.is_err() {
+            return 2;
+        }
     }
     if make_private && unsafe { make_networks_private() }.is_err() {
         return 4;

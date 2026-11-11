@@ -38,6 +38,13 @@ try {
     & "$projectRoot\tests\Check-Runtime.ps1" -PackageRoot $package
     python "$projectRoot\tests\backend_integration.py" --package $package
     if ($LASTEXITCODE -ne 0) { throw 'Empfänger-Smoke-Test fehlgeschlagen' }
+    # Ende-zu-Ende ohne iPhone: nachgebauter Sender gegen den Rust-Empfänger
+    & $cargo build --release -p pcmirror-receiver --examples
+    if ($LASTEXITCODE -ne 0) { throw 'Testsender konnte nicht gebaut werden' }
+    foreach ($case in @(@('--codec', '264'), @('--codec', '265'), @('--codec', '264', '--mode', '3'), @('--codec', '264', '--pin', '4711'))) {
+        python "$projectRoot\tests\airplay_e2e.py" --package $package @case
+        if ($LASTEXITCODE -ne 0) { throw "Ende-zu-Ende-Test fehlgeschlagen: $case" }
+    }
     python "$projectRoot\tests\verify_package.py" --package $package
     if ($LASTEXITCODE -ne 0) { throw 'Paketprüfung fehlgeschlagen' }
 

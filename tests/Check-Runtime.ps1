@@ -14,13 +14,17 @@ $env:GST_PLUGIN_PATH_1_0 = ''
 $env:GST_PLUGIN_SCANNER_1_0 = "$PackageRoot\libexec\gstreamer-1.0\gst-plugin-scanner.exe"
 $env:GST_REGISTRY_1_0 = Join-Path $env:TEMP ('pcmirror-test-' + [guid]::NewGuid().ToString('N') + '.bin')
 try {
-    foreach ($element in @('appsrc','decodebin','h264parse','avdec_h264','avdec_aac','avdec_alac','videoconvert','videoscale','audioconvert','audioresample','volume','level','d3d11videosink','wasapisink','videotestsrc')) {
+    foreach ($element in @('appsrc','decodebin','h264parse','h265parse','avdec_h264','avdec_h265','avdec_aac','avdec_alac','videoconvert','videoscale','audioconvert','audioresample','volume','level','d3d11videosink','wasapisink','videotestsrc')) {
         $output = & "$nativeBin\gst-inspect-1.0.exe" $element 2>&1
         if ($LASTEXITCODE -ne 0) { throw "Plugin $element fehlt: $output" }
         Write-Output "PASS $element"
     }
     & "$nativeBin\uxplay.exe" -v
-    if ($LASTEXITCODE -ne 0) { throw 'UxPlay konnte mit den gebündelten DLLs nicht starten.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Der Rust-Empfänger konnte nicht starten.' }
+    if (Test-Path -LiteralPath "$nativeBin\uxplay-classic.exe") {
+        & "$nativeBin\uxplay-classic.exe" -v
+        if ($LASTEXITCODE -ne 0) { throw 'Der klassische Empfänger konnte mit den gebündelten DLLs nicht starten.' }
+    }
 } finally {
     Remove-Item -LiteralPath $env:GST_REGISTRY_1_0 -ErrorAction SilentlyContinue
     foreach ($name in $previousEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }

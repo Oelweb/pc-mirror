@@ -23,7 +23,7 @@ $output = if ($PackageDirectory) { [IO.Path]::GetFullPath($PackageDirectory) } e
 $cargo = (Get-Command cargo -ErrorAction SilentlyContinue).Source
 if (!$cargo) { $cargo = "$env:USERPROFILE\.cargo\bin\cargo.exe" }
 
-& $cargo build --release -p pcmirror --manifest-path "$projectRoot\Cargo.toml"
+& $cargo build --release -p pcmirror -p pcmirror-receiver --manifest-path "$projectRoot\Cargo.toml"
 if ($LASTEXITCODE -ne 0) { throw 'Rust-Build fehlgeschlagen.' }
 
 # Saubere Zielstruktur; eine übernommene Runtime darf nicht im Ziel selbst liegen.
@@ -42,6 +42,11 @@ if ($RuntimeFrom) {
     python "$PSScriptRoot\collect_runtime.py" --prefix "$MsysRoot\ucrt64" --receiver "$projectRoot\build\backend\bin\uxplay.exe" --destination $output
 }
 if ($LASTEXITCODE -ne 0) { throw 'Runtime konnte nicht vollständig gesammelt werden.' }
+
+# Rust-Empfänger als uxplay.exe (gleicher Pfad, Firewall-Freigaben bleiben gültig),
+# bisheriger C-Empfänger als uxplay-classic.exe (Ausweichlösung in den Einstellungen)
+python "$PSScriptRoot\install_receiver.py" --package $output --receiver "$projectRoot\target\release\pcmirror-receiver.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Rust-Empfänger konnte nicht eingesetzt werden.' }
 
 Copy-Item -LiteralPath "$projectRoot\target\release\PC-Mirror.exe" -Destination $output
 Copy-Item -LiteralPath "$projectRoot\README.md", "$projectRoot\LICENSE" -Destination $output

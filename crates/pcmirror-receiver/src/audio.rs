@@ -145,7 +145,10 @@ impl AudioStream {
                 let mut buffer = [0u8; MAX_PACKET];
                 let mut last_resend = Instant::now() - Duration::from_secs(1);
                 while !stop.load(Ordering::SeqCst) {
-                    let Ok((len, _)) = data.recv_from(&mut buffer) else { continue };
+                    let Ok((len, from)) = data.recv_from(&mut buffer) else { continue };
+                    if from.ip() != remote {
+                        continue; // nur Pakete des verbundenen Geräts
+                    }
                     let packet = &buffer[..len];
                     if len < 12 || packet[1] & 0x7f != 0x60 {
                         continue;
@@ -174,7 +177,10 @@ impl AudioStream {
             threads.push(std::thread::spawn(move || {
                 let mut buffer = [0u8; MAX_PACKET];
                 while !stop.load(Ordering::SeqCst) {
-                    let Ok((len, _)) = control.recv_from(&mut buffer) else { continue };
+                    let Ok((len, from)) = control.recv_from(&mut buffer) else { continue };
+                    if from.ip() != remote {
+                        continue;
+                    }
                     let packet = &buffer[..len];
                     if len >= 16 && packet[1] & 0x7f == 0x56 {
                         let inner = &packet[4..];

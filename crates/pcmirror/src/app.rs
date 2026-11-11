@@ -5,7 +5,7 @@ use crate::diagnostics;
 use crate::events::{self, Event};
 use crate::i18n::{self, tr, trf, Text};
 use crate::logging;
-use crate::receiver::{Notice, Receiver};
+use crate::receiver::{self, Notice, Receiver};
 use crate::settings::{self, Geometry, Settings};
 use crate::snapshot;
 use crate::updater::{Action, UpdateService};
@@ -113,6 +113,7 @@ pub struct App {
 }
 
 pub fn run(settings: Settings, synthetic: bool, preview: bool) -> Result<(), slint::PlatformError> {
+    receiver::set_classic(settings.classic_receiver);
     let events = events::init();
     let main = MainWindow::new()?;
     let toolbar = ToolbarWindow::new()?;
@@ -1235,6 +1236,7 @@ impl App {
             window.set_pin_enabled(s.pin_enabled);
             window.set_pin(s.pin.clone().into());
             window.set_software_decoder(s.software_decoder);
+            window.set_classic_receiver(s.classic_receiver);
             window.set_automatic_updates(s.automatic_updates);
             window.set_version_text(trf("Version %1", &[VERSION]).into());
         }
@@ -1318,6 +1320,7 @@ impl App {
                 pin_enabled: window.get_pin_enabled(),
                 pin: window.get_pin().trim().to_owned(),
                 software_decoder: window.get_software_decoder(),
+                classic_receiver: window.get_classic_receiver(),
                 topmost: window.get_topmost(),
                 muted: current.muted,
                 automatic_updates: window.get_automatic_updates(),
@@ -1348,6 +1351,7 @@ impl App {
             self.show_error(message, "Einstellungen speichern");
         }
         let receiver_changed = next.receiver_differs(&previous);
+        receiver::set_classic(next.classic_receiver);
         let (topmost, ipad_fill, automatic) =
             (next.topmost, next.ipad_fill, next.automatic_updates);
         {

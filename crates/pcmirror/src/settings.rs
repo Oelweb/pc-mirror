@@ -21,6 +21,8 @@ pub struct Settings {
     pub pin_enabled: bool,
     pub pin: String,
     pub software_decoder: bool,
+    /// Alter C-Empfänger (UxPlay) statt des Rust-Empfängers, nur als Ausweichlösung.
+    pub classic_receiver: bool,
     pub topmost: bool,
     pub muted: bool,
     pub automatic_updates: bool,
@@ -37,6 +39,7 @@ impl Default for Settings {
             pin_enabled: false,
             pin: String::new(),
             software_decoder: false,
+            classic_receiver: false,
             topmost: false,
             muted: false,
             automatic_updates: true,
@@ -85,6 +88,7 @@ impl Settings {
             pin_enabled: ini.bool("receiver", "pinEnabled", false),
             pin: String::new(),
             software_decoder: ini.bool("receiver", "softwareDecoder", false),
+            classic_receiver: ini.bool("receiver", "classic", false),
             topmost: ini.bool("window", "topmost", false),
             muted: ini.bool("audio", "muted", false),
             automatic_updates: ini.bool("updates", "automatic", true),
@@ -130,6 +134,7 @@ impl Settings {
             "softwareDecoder",
             bool_text(self.software_decoder),
         );
+        ini.set("receiver", "classic", bool_text(self.classic_receiver));
         ini.set("window", "topmost", bool_text(self.topmost));
         ini.set("audio", "muted", bool_text(self.muted));
         ini.set("updates", "automatic", bool_text(self.automatic_updates));
@@ -147,6 +152,7 @@ impl Settings {
             || self.pin_enabled != other.pin_enabled
             || self.pin != other.pin
             || self.software_decoder != other.software_decoder
+            || self.classic_receiver != other.classic_receiver
     }
 
     pub fn receiver_arguments(&self, config_file: &Path) -> Vec<OsString> {
@@ -472,6 +478,7 @@ mod tests {
             pin_enabled: true,
             pin: "1234".into(),
             software_decoder: true,
+            classic_receiver: false,
             ..Default::default()
         };
         let args: Vec<String> = s

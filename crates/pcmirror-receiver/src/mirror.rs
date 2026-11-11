@@ -84,7 +84,7 @@ pub struct MirrorStream {
 
 impl MirrorStream {
     /// Öffnet den Video-Port und verarbeitet die eine Verbindung des Senders.
-    pub fn start(port: u16, aes_key: [u8; 16], stream_connection_id: u64, media: Arc<Media>, on_end: impl FnOnce() + Send + 'static) -> Result<(Self, u16), String> {
+    pub fn start(port: u16, remote: std::net::IpAddr, aes_key: [u8; 16], stream_connection_id: u64, media: Arc<Media>, on_end: impl FnOnce() + Send + 'static) -> Result<(Self, u16), String> {
         let listener = TcpListener::bind(("0.0.0.0", port))
             .or_else(|_| TcpListener::bind(("0.0.0.0", 0)))
             .map_err(|e| format!("Video-Port: {e}"))?;
@@ -98,7 +98,12 @@ impl MirrorStream {
             let mut session = Session::default();
             while !stop_thread.load(Ordering::SeqCst) {
                 match listener.accept() {
-                    Ok((stream, _)) => {
+                    Ok((stream, peer)) => {
+                        // Nur das verbundene Gerät darf Video senden.
+                        if peer.ip() != remote {
+                            control::log(&format!("Videoport: Verbindung von fremder Adresse {} abgewiesen", peer.ip()));
+                            continue;
+                        }
                         let _ = stream.set_nonblocking(false);
                         let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
                         let _ = stream.set_nodelay(true);

@@ -22,9 +22,9 @@ def main(output: Path) -> None:
         check=True, capture_output=True, text=True, encoding="utf-8").stdout)
     packages = {p["id"]: p for p in metadata["packages"]}
     nodes = {n["id"]: n for n in metadata["resolve"]["nodes"]}
-    start = next(p["id"] for p in metadata["packages"] if p["name"] == "pcmirror")
+    starts = [p["id"] for p in metadata["packages"] if p["name"] in ("pcmirror", "pcmirror-receiver")]
     # Nur normale Abhängigkeiten (keine Build-/Dev-Abhängigkeiten) gelangen ins Programm.
-    pending, linked = [start], set()
+    pending, linked = list(starts), set()
     while pending:
         current = pending.pop()
         if current in linked:
@@ -33,7 +33,7 @@ def main(output: Path) -> None:
         for dependency in nodes[current]["deps"]:
             if any(kind["kind"] is None for kind in dependency["dep_kinds"]):
                 pending.append(dependency["pkg"])
-    parts = ["Lizenzen der in PC-Mirror.exe enthaltenen Rust-Bibliotheken\n" + "=" * 60 + "\n"]
+    parts = ["Lizenzen der in PC-Mirror.exe und uxplay.exe (Rust-Empfänger) enthaltenen Rust-Bibliotheken\n" + "=" * 60 + "\n"]
     for package in sorted((packages[i] for i in linked), key=lambda p: (p["name"], p["version"])):
         if package["source"] is None:
             continue  # eigene Crates: GPL-3.0-or-later, siehe LICENSE

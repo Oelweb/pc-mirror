@@ -30,6 +30,7 @@ pub const FEATURES_LOW: u32 = 0x5A7F_FEE6;
 pub const FEATURE_H265: u32 = 1 << 10;
 const AUDIO_DELAY_MICROS: u64 = 250_000;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_CONNECTIONS: usize = 16;
 
 pub struct Shared {
     pub config: Config,
@@ -137,8 +138,8 @@ impl Shared {
     /// Schließt alle anderen Verbindungen (Option „nohold“).
     fn close_others(&self, keep: u64) {
         let connections = self.connections.lock().unwrap();
-        for (id, (stream, _)) in connections.iter() {
-            if *id != keep {
+        for (id, (stream, raop)) in connections.iter() {
+            if *id != keep && *raop {
                 let _ = stream.shutdown(Shutdown::Both);
             }
         }
@@ -188,6 +189,11 @@ pub fn start(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Result<std::thread::
         while !stop.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, peer)) => {
+                    // Schutz vor Verbindungsfluten aus dem Netz
+                    if shared.connections.lock().unwrap().len() >= MAX_CONNECTIONS {
+                        drop(stream);
+                        continue;
+                    }
                     let shared = shared.clone();
                     std::thread::spawn(move || serve(shared, stream, peer));
                 }
@@ -276,7 +282,13 @@ impl Connection {
             return None;
         }
         let protocol = request.protocol.as_str();
-        if self.kind == Kind::Unknown {
+        // Eine laufende Sitzung wird erst ersetzt, wenn das neue Gerät wirklich eine
+        // Sitzung beginnt (SETUP mit Schlüssel) – nicht schon bei /info-Abfragen
+        // anderer Geräte im Netz (Verbesserung gegenüber der C-Fassung).
+        let starts_session = request.method == "SETUP"
+            && self.kind == Kind::Unknown
+            && parse_plist(&request.body).contains_key("ekey");
+        if starts_session {
             if shared.raop_connection_active(self.id) {
                 if shared.config.nohold {
                     control::log("Neue Verbindung ersetzt die bestehende");
@@ -511,7 +523,7 @@ impl Connection {
                         };
                         let id = uint(stream, "streamConnectionID").unwrap_or(0);
                         self.mirror = None;
-                        match MirrorStream::start(shared.config.mirror_port(), key, id, shared.media.clone(), || {}) {
+                        match MirrorStream::start(shared.config.mirror_port(), self.remote, key, id, shared.media.clone(), || {}) {
                             Ok((mirror, port)) => {
                                 self.mirror = Some(mirror);
                                 let mut s = Dictionary::new();

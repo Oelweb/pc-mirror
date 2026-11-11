@@ -28,6 +28,15 @@ assert not foreign, f"PC-Mirror.exe needs non-system DLLs: {foreign}"
 assert not list(package.glob("Qt6*.dll")), "Qt files must not be shipped anymore"
 print(f"PASS PC-Mirror.exe uses only Windows system DLLs ({len(app_imports)} imports)")
 
+# Der Empfänger ist die Rust-Fassung (statisch gelinkt, GStreamer wird zur Laufzeit geladen).
+receiver = package / "uxplay.exe"
+receiver_imports = imports(receiver)
+foreign = [name for name in receiver_imports if not is_system(name)]
+assert not foreign, f"uxplay.exe (Rust) needs non-system DLLs: {foreign}"
+assert b"pcmirror_receiver" in receiver.read_bytes() or b"PCMIRROR|" in receiver.read_bytes(), "uxplay.exe is not the Rust receiver"
+assert (package / "uxplay-classic.exe").is_file(), "classic C receiver missing"
+print(f"PASS uxplay.exe is the Rust receiver ({len(receiver_imports)} system imports), classic receiver present")
+
 runtime_sources = root / f"dist/PC-Mirror-{version}-runtime-sources.zip"
 if runtime_sources.exists():
     expected = json.loads((package / "runtime-sources.json").read_text(encoding="utf-8"))
@@ -45,7 +54,8 @@ else:
 
 with ZipFile(root / f"dist/PC-Mirror-{version}-source.zip") as bundle:
     for name in ("Cargo.toml", "Cargo.lock", "crates/pcmirror/src/app.rs", "crates/pcmirror/ui/app.slint",
-                 "crates/pcmirror-sign/src/lib.rs", "third_party/uxplay/uxplay.cpp",
+                 "crates/pcmirror-sign/src/lib.rs", "crates/pcmirror-receiver/src/server.rs",
+                 "crates/pcmirror-receiver/src/fairplay/playfair.rs", "third_party/uxplay/uxplay.cpp",
                  "third_party/uxplay/lib/raop.c", "scripts/package.ps1", "LICENSE"):
         assert name in bundle.namelist(), name
     assert bundle.testzip() is None

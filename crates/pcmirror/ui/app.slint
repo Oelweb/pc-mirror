@@ -691,6 +691,7 @@ export component SettingsWindow inherits Window {
     in-out property <bool> pin-enabled;
     in-out property <string> pin;
     in-out property <bool> software-decoder;
+    in-out property <bool> classic-receiver;
     in-out property <bool> automatic-updates: true;
     in property <string> version-text;
     in property <string> update-status;
@@ -818,6 +819,14 @@ export component SettingsWindow inherits Window {
                     PushButton {
                         text: T.t("Starten", T.lang);
                         clicked => { root.start-onboarding(); }
+                    }
+                }
+                SettingRow {
+                    label: T.t("Klassischer Empfänger", T.lang);
+                    hint: T.t("Alter UxPlay-Empfänger statt des neuen Rust-Empfängers. Nur einschalten, wenn die Verbindung sonst nicht klappt.", T.lang);
+                    Toggle {
+                        checked <=> root.classic-receiver;
+                        label: T.t("Klassischer Empfänger", T.lang);
                     }
                 }
                 SettingRow {

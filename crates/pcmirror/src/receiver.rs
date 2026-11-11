@@ -50,8 +50,35 @@ pub enum Notice {
     Stopped,
 }
 
+/// Rust-Empfänger (Standard) heißt `uxplay.exe`, damit bestehende Firewall-Freigaben
+/// gültig bleiben; der alte C-Empfänger liegt als `uxplay-classic.exe` bei.
+pub const RUST_RECEIVER: &str = "uxplay.exe";
+pub const CLASSIC_RECEIVER: &str = "uxplay-classic.exe";
+
+static CLASSIC: AtomicBool = AtomicBool::new(false);
+
+/// Wählt den Empfänger (Einstellung „Klassischer Empfänger“).
+pub fn set_classic(classic: bool) {
+    CLASSIC.store(classic, Ordering::SeqCst);
+}
+
+/// Pfad des aktiven Empfängers. Fehlt der klassische, wird der Rust-Empfänger genutzt.
 pub fn executable() -> PathBuf {
-    exe_dir().join("uxplay.exe")
+    let classic = exe_dir().join(CLASSIC_RECEIVER);
+    if CLASSIC.load(Ordering::SeqCst) && classic.is_file() {
+        classic
+    } else {
+        exe_dir().join(RUST_RECEIVER)
+    }
+}
+
+/// Alle mitgelieferten Empfänger (für die Firewall-Freigaben).
+pub fn all_executables() -> Vec<PathBuf> {
+    [RUST_RECEIVER, CLASSIC_RECEIVER]
+        .iter()
+        .map(|name| exe_dir().join(name))
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 /// Paketwurzel: flaches Velopack-Paket oder alte `bin/`-Struktur.
@@ -213,7 +240,11 @@ impl Receiver {
         notices.push(Notice::Log(if test_pattern {
             "Synthetischer Bildtest gestartet; kein AirPlay-Test.".into()
         } else {
-            format!("AirPlay-Empfänger startet: {}", settings.name)
+            format!(
+                "AirPlay-Empfänger startet: {} ({})",
+                settings.name,
+                if exe.file_name().is_some_and(|n| n == CLASSIC_RECEIVER) { "klassisch, C" } else { "Rust" }
+            )
         }));
         notices
     }
