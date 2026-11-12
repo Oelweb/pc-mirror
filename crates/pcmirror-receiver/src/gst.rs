@@ -93,6 +93,9 @@ pub struct Api {
     pub g_error_free: unsafe extern "C" fn(*mut GError),
     pub g_free: unsafe extern "C" fn(*mut c_void),
     pub g_object_set: unsafe extern "C" fn(*mut c_void, *const c_char, ...),
+    pub gst_element_get_clock: unsafe extern "C" fn(*mut GstElement) -> *mut c_void,
+    pub gst_clock_get_time: unsafe extern "C" fn(*mut c_void) -> u64,
+    pub gst_element_get_base_time: unsafe extern "C" fn(*mut GstElement) -> u64,
 }
 
 /// Sucht ein Symbol in allen geladenen Bibliotheken.
@@ -153,6 +156,9 @@ impl Api {
             g_error_free: sym(&libs, "g_error_free")?,
             g_free: sym(&libs, "g_free")?,
             g_object_set: sym(&libs, "g_object_set")?,
+            gst_element_get_clock: sym(&libs, "gst_element_get_clock")?,
+            gst_clock_get_time: sym(&libs, "gst_clock_get_time")?,
+            gst_element_get_base_time: sym(&libs, "gst_element_get_base_time")?,
             _libs: libs,
         })
     }
@@ -290,6 +296,26 @@ impl Pipeline {
     }
 
     pub fn push(&self, data: &[u8]) {
+        self.push_at(data, None);
+    }
+
+    /// Aktuelle Laufzeit der Pipeline (Uhrzeit minus Basiszeit), sobald sie läuft.
+    pub fn running_time(&self) -> Option<u64> {
+        let api = api().ok()?;
+        unsafe {
+            let clock = (api.gst_element_get_clock)(self.pipeline);
+            if clock.is_null() {
+                return None;
+            }
+            let now = (api.gst_clock_get_time)(clock);
+            (api.gst_object_unref)(clock);
+            let base = (api.gst_element_get_base_time)(self.pipeline);
+            (now != u64::MAX && base != u64::MAX).then(|| now.saturating_sub(base))
+        }
+    }
+
+    /// Puffer mit optionalem Darstellungszeitpunkt (PTS, Laufzeit in ns) einspeisen.
+    pub fn push_at(&self, data: &[u8], pts: Option<u64>) {
         let Ok(api) = api() else { return };
         if self.appsrc.is_null() || data.is_empty() {
             return;
@@ -300,6 +326,10 @@ impl Pipeline {
                 return;
             }
             (api.gst_buffer_fill)(buffer, 0, data.as_ptr().cast(), data.len());
+            if let Some(pts) = pts {
+                // GstBuffer { GstMiniObject (64 Byte), pool (8), pts, dts, duration, ... }
+                *(buffer as *mut u8).add(72).cast::<u64>() = pts;
+            }
             (api.gst_app_src_push_buffer)(self.appsrc, buffer); // übernimmt den Puffer
         }
     }

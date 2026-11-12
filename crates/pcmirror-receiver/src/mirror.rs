@@ -199,7 +199,7 @@ fn run_stream(mut stream: TcpStream, cipher: &mut CtrStream, session: &mut Sessi
                     }
                 }
                 frame.extend_from_slice(&payload);
-                media.push_video(&frame);
+                media.push_video(&frame, crate::media::ntp_to_ns(timestamp));
             }
             0x01 => {
                 let option = header[6];

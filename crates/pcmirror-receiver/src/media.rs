@@ -11,6 +11,52 @@ pub struct Media {
     inner: Mutex<Inner>,
 }
 
+/// Zusätzlicher Puffer gegen Schwankungen im WLAN, bevor ein Bild als verspätet gilt.
+const JITTER_SLACK_NS: u64 = 40_000_000;
+/// Ab dieser Verspätung wird der Zeitbezug neu gesetzt.
+const RESYNC_NS: u64 = 250_000_000;
+
+/// Wandelt die Zeitstempel des Senders in Darstellungszeitpunkte der Pipeline um,
+/// damit die Bilder im Takt des iPhones statt in Netzwerkschüben erscheinen
+/// (wie `video_sync` in der C-Fassung).
+#[derive(Default)]
+pub struct VideoClock {
+    /// Laufzeit minus Senderzeit (kleinste bisher gemessene Übertragungszeit).
+    offset: Option<i128>,
+    last_pts: Option<u64>,
+}
+
+impl VideoClock {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// `remote_ns`: Senderzeit des Bildes, `now`: aktuelle Pipeline-Laufzeit.
+    pub fn pts(&mut self, remote_ns: u64, now: u64) -> u64 {
+        let arrival = i128::from(now) - i128::from(remote_ns);
+        let offset = match self.offset {
+            // Früher als erwartet: Bezug auf die schnellere Übertragung nachziehen.
+            Some(offset) if arrival >= offset && arrival - offset <= i128::from(RESYNC_NS) => offset,
+            Some(offset) if arrival < offset => arrival,
+            _ => arrival, // erstes Bild oder stark verspätet: neu ausrichten
+        };
+        self.offset = Some(offset);
+        let mut pts = (i128::from(remote_ns) + offset + i128::from(JITTER_SLACK_NS)).max(0) as u64;
+        if let Some(last) = self.last_pts {
+            pts = pts.max(last + 1); // Zeitstempel bleiben aufsteigend
+        }
+        self.last_pts = Some(pts);
+        pts
+    }
+}
+
+/// NTP-Zeitstempel (32.32) des Videokopfes in Nanosekunden.
+pub fn ntp_to_ns(timestamp: u64) -> u64 {
+    let seconds = timestamp >> 32;
+    let fraction = timestamp & 0xffff_ffff;
+    seconds.wrapping_mul(1_000_000_000).wrapping_add((fraction * 1_000_000_000) >> 32)
+}
+
 #[derive(Default)]
 struct Inner {
     video: Option<(bool, Pipeline)>,
@@ -18,6 +64,7 @@ struct Inner {
     volume: f64,
     muted: bool,
     video_paused: bool,
+    video_clock: VideoClock,
     audio_frames: u64,
 }
 
@@ -50,7 +97,7 @@ impl Media {
         };
         let (element, options) = self.video_sink.split_once(' ').unwrap_or((self.video_sink.as_str(), ""));
         format!(
-            "appsrc name=video_source ! queue ! {parser} ! {decoder} ! videoconvert ! videoscale ! {element} name=pcmirror_video {options} sync=false"
+            "appsrc name=video_source ! queue ! {parser} ! {decoder} ! videoconvert ! videoscale ! {element} name=pcmirror_video {options} sync=true max-lateness=-1 qos=false"
         )
     }
 
@@ -70,13 +117,17 @@ impl Media {
         control::log(&format!("Videoausgabe gestartet ({})", if h265 { "H.265" } else { "H.264" }));
         inner.video = Some((h265, pipeline));
         inner.video_paused = false;
+        inner.video_clock.reset();
         Ok(())
     }
 
-    pub fn push_video(&self, data: &[u8]) {
-        let inner = self.inner.lock().unwrap();
+    /// `remote_ns`: Zeitstempel des Senders für dieses Bild.
+    pub fn push_video(&self, data: &[u8], remote_ns: u64) {
+        let mut inner = self.inner.lock().unwrap();
+        let inner = &mut *inner;
         if let Some((_, pipeline)) = &inner.video {
-            pipeline.push(data);
+            let pts = pipeline.running_time().map(|now| inner.video_clock.pts(remote_ns, now));
+            pipeline.push_at(data, pts);
             if let Some(error) = pipeline.poll_error() {
                 control::log(&format!("Videofehler: {error}"));
             }
@@ -187,6 +238,30 @@ impl Media {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn video_clock_paces_by_sender_time() {
+        let mut clock = VideoClock::default();
+        let ms = 1_000_000u64;
+        // erstes Bild (Senderzeit 1000 ms) kommt bei Laufzeit 100 ms an
+        assert_eq!(clock.pts(1_000 * ms, 100 * ms), 140 * ms);
+        // nächstes Bild 33 ms später erzeugt, aber im Schub erst 60 ms später angekommen
+        assert_eq!(clock.pts(1_033 * ms, 160 * ms), 173 * ms);
+        // kurz danach im selben Schub: Takt bleibt 33 ms
+        assert_eq!(clock.pts(1_066 * ms, 170 * ms), 206 * ms);
+        // schnellere Übertragung als beim ersten Bild: Bezug wird nachgezogen
+        assert_eq!(clock.pts(1_100 * ms, 190 * ms), 230 * ms);
+        // 1 s Verspätung: neu ausrichten statt dauerhaft hinterherzulaufen
+        assert_eq!(clock.pts(1_133 * ms, 2_000 * ms), 2_040 * ms);
+    }
+
+    #[test]
+    fn ntp_conversion() {
+        assert_eq!(ntp_to_ns(1 << 32), 1_000_000_000);
+        assert_eq!(ntp_to_ns((2 << 32) | 0x8000_0000), 2_500_000_000);
+    }
+
     #[test]
     fn volume_mapping() {
         let to_linear = |db: f32| if db <= -30.0 { 0.0 } else { 10f64.powf(0.05 * f64::from(db.min(0.0))) };

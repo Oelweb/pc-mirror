@@ -342,7 +342,8 @@ fn main() {
         p.extend_from_slice(pps);
         p
     };
-    let mut ts: u64 = 1_000_000;
+    // NTP-Zeitstempel 32.32 wie beim iPhone (Sekunden seit Start), 30 Bilder/s
+    let mut ts: u64 = 100 << 32;
     packet(1, if h265 { 0x1e } else { 0x16 }, ts, &config, false);
     let mut frames = 0;
     for nal in nals.iter().filter(|n| is_vcl(nal_type(n))) {
@@ -351,7 +352,7 @@ fn main() {
         cipher.apply(&mut payload);
         let idr = if h265 { matches!(nal_type(nal), 19 | 20) } else { nal_type(nal) == 5 };
         packet(0, 0, ts, &payload, idr);
-        ts += 33_333_333;
+        ts += (1u64 << 32) / 30;
         frames += 1;
         std::thread::sleep(std::time::Duration::from_millis(33));
     }
